@@ -242,7 +242,13 @@
 
 (cl-defun bic--send (fsm string &key sensitive)
   ;; XXX: too many newlines?
-  (bic--transcript fsm (concat "C: " (if sensitive "<omitted>" string) "\n"))
+  (bic--transcript fsm
+		   (concat "C: "
+			   (if sensitive
+			       "<omitted>"
+			     (if (string= (substring string -2) "\r\n")
+				 (substring string 0 -2)
+			       string)) "\n"))
   (send-string (plist-get (fsm-get-state-data fsm) :proc) string))
 
 (defun bic--transcript (fsm string)
