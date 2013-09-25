@@ -194,12 +194,33 @@
        (let ((data (substring line 2))
 	     (client (plist-get state-data :sasl-client))
 	     (step (plist-get state-data :sasl-step)))
-	 (sasl-step-set-data (base64-decode-string data))
+	 (sasl-step-set-data step (base64-decode-string data))
 	 (setq step (sasl-next-step client step))
-	 (bic--send fsm (base64-encode-string (or (sasl-step-data step) "") t)
+	 (bic--send fsm (concat (base64-encode-string (or (sasl-step-data step) "") t) "\r\n")
 		    :sensitive t)
-	 ;; XXX: check local success/failure?
-       )))))
+	 ;; XXX: check local success/failure, for mechanisms that
+	 ;; simultaneously authenticate the server
+	 (list :sasl-auth (plist-put state-data :sasl-step step))))
+      ((string-prefix-p "auth " line)
+       (pcase (bic--parse-line line)
+	 (`(,_ "OK" ,message)
+	  ;; XXX: check local success/failure here too
+	  (message "IMAP authentication successful: %s" message)
+	  (list :authenticated state-data))
+	 (`(,_ "NO" ,message)
+	  (message "IMAP authentication failed: %s" message)
+	  ;; TODO: ask for better password?
+	  (list nil nil nil))
+	 (`(,_ "BAD" ,message)
+	  ;; This shouldn't happen
+	  (message "Unexpected IMAP authentication error: %s" message)
+	  (list nil nil nil))))
+      (t
+       (message "Unexpected input: %s" line)
+       (list nil nil nil))))
+    (event
+     (message "Got event %S" event)
+     (list :sasl-auth state-data))))
 
 (defun bic--filter (process data fsm)
   (with-current-buffer (process-buffer process)
