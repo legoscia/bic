@@ -186,7 +186,7 @@
   (fsm state-data event callback)
   (pcase event
     (`(:filter ,process ,data)
-     (bic--filter process data fsm)
+     (bic--filter process data fsm :sensitive (apply-partially #'string-prefix-p "+ "))
      (list :sasl-auth state-data))
     (`(:line ,line)
      (cond
@@ -222,7 +222,7 @@
      (message "Got event %S" event)
      (list :sasl-auth state-data))))
 
-(defun bic--filter (process data fsm)
+(cl-defun bic--filter (process data fsm &key sensitive)
   (with-current-buffer (process-buffer process)
     (goto-char (point-max))
     (insert data)
@@ -232,8 +232,11 @@
     (while (search-forward "\r\n" nil t)
       (let* ((line-crlf (delete-and-extract-region (point-min) (match-end 0)))
 	     (line (substring line-crlf 0 -2)))
-	;; TODO: filter sensitive data
-	(bic--transcript fsm (concat "S: " line "\n"))
+	(bic--transcript fsm (concat "S: "
+				     (if (and sensitive (funcall sensitive line))
+					 "<omitted>"
+				       line)
+				     "\n"))
 	;; Send the line as an event to the FSM
 	(fsm-send fsm (list :line line))))))
 
