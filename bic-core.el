@@ -160,17 +160,24 @@
     (`(:line ,line)
      (cond
       ((string-prefix-p "foo OK " line)
-       (gnutls-negotiate :process (plist-get state-data :proc)
-			 :hostname (plist-get state-data :server)
-			 :verify-hostname-error (not bic-ignore-tls-errors)
-			 :verify-error (not bic-ignore-tls-errors))
-       ;; No error?  Connection encrypted!
-       (message "STARTTLS negotiated")
-       ;; Forget capabilities and ask again on encrypted connection.
-       (list :wait-for-capabilities
-	     (plist-put
-	      (plist-put state-data :encrypted t)
-	      :capabilities nil)))
+       (condition-case e
+	   (progn
+	     (gnutls-negotiate :process (plist-get state-data :proc)
+			       :hostname (plist-get state-data :server)
+			       :verify-hostname-error (not bic-ignore-tls-errors)
+			       :verify-error (not bic-ignore-tls-errors))
+	     ;; No error?  Connection encrypted!
+	     (message "STARTTLS negotiated")
+	     ;; Forget capabilities and ask again on encrypted connection.
+	     (list :wait-for-capabilities
+		   (plist-put
+		    (plist-put state-data :encrypted t)
+		    :capabilities nil)))
+	 (error
+	  (message "Cannot negotiate STARTTLS for %s: %s"
+		   (plist-get state-data :server)
+		   (error-message-string e))
+	  (list nil nil nil))))
       ((string-prefix-p "foo BAD " line)
        (message "Cannot negotiate STARTTLS: %s"
 		(substring line 8))
