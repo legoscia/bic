@@ -33,21 +33,25 @@
   "If non-nil, ignore certificate verification errors.")
 
 (define-state-machine bic-connection
-  :start ((username server)
+  :start ((username server connection-type)
 	  "Start an IMAP connection."
 	  (list :connecting
 		(list :name (concat username "@" server)
 		      :username username
-		      :server server))))
+		      :server server
+		      :connection-type connection-type))))
 
 (define-enter-state bic-connection :connecting
   (fsm state-data)
   (let* ((server (plist-get state-data :server))
+	 (connection-type (plist-get state-data :connection-type))
 	 (proc (make-network-process
 		:name (concat "bic-" server)
 		:buffer (generate-new-buffer (concat "bic-" server))
 		:host server
-		:service 143
+		:service (ecase connection-type
+			   (:starttls 143)
+			   (:plaintls 993))
 		:coding 'binary
 		:nowait t
 		:filter (fsm-make-filter fsm)
@@ -60,7 +64,25 @@
     (`(:sentinel ,_ ,string)
      (cond
       ((string-prefix-p "open" string)
-       (list :wait-for-greeting state-data nil))
+       (ecase (plist-get state-data :connection-type)
+	 (:starttls
+	  ;; Wait for STARTTLS capability etc
+	  (list :wait-for-greeting state-data nil))
+	 (:plaintls
+	  ;; Negotiate TLS immediately
+	  (condition-case e
+	      (progn
+		(bic--negotiate-tls state-data)
+		;; No error?  Connection encrypted!
+		(list :wait-for-greeting
+		      (plist-put
+		       (plist-put state-data :encrypted t)
+		       :capabilities nil)))
+	    (error
+	     (message "Cannot negotiate TLS for %s: %s"
+		      (plist-get state-data :server)
+		      (error-message-string e))
+	     (list nil nil nil))))))
       ((string-prefix-p "failed" string)
        ;; XXX: handle gracefully
        (message "connection failed: %s" string)
@@ -162,10 +184,7 @@
       ((string-prefix-p "foo OK " line)
        (condition-case e
 	   (progn
-	     (gnutls-negotiate :process (plist-get state-data :proc)
-			       :hostname (plist-get state-data :server)
-			       :verify-hostname-error (not bic-ignore-tls-errors)
-			       :verify-error (not bic-ignore-tls-errors))
+	     (bic--negotiate-tls state-data)
 	     ;; No error?  Connection encrypted!
 	     (message "STARTTLS negotiated")
 	     ;; Forget capabilities and ask again on encrypted connection.
@@ -228,6 +247,12 @@
     (event
      (message "Got event %S" event)
      (list :sasl-auth state-data))))
+
+(defun bic--negotiate-tls (state-data)
+  (gnutls-negotiate :process (plist-get state-data :proc)
+		    :hostname (plist-get state-data :server)
+		    :verify-hostname-error (not bic-ignore-tls-errors)
+		    :verify-error (not bic-ignore-tls-errors)))
 
 (cl-defun bic--filter (process data fsm &key sensitive)
   (with-current-buffer (process-buffer process)
