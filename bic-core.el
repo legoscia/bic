@@ -302,7 +302,7 @@
 	(list :ok nil resp-text))))
    ;; TODO: PREAUTH
    (t
-    (error "Unexpected greeting: %s" line0))))
+    (error "Unexpected greeting: %s" line))))
 
 (defun bic--parse-capabilities (string)
   (let ((start 0) capabilities auth)
