@@ -26,6 +26,7 @@
 
 (require 'fsm)
 (require 'sasl)
+(require 'gnutls)
 
 (defvar bic-transcript-buffer "*bic-transcript-%s*")
 
