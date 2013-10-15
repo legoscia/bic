@@ -33,6 +33,9 @@
 (defvar bic-ignore-tls-errors nil
   "If non-nil, ignore certificate verification errors.")
 
+(defvar bic-send-cleartext-password nil
+  "If non-nil, allow sending passwords on unencrypted connections.")
+
 (define-state-machine bic-connection
   :start ((username server connection-type)
 	  "Start an IMAP connection."
@@ -51,7 +54,7 @@
 		:buffer (generate-new-buffer (concat "bic-" server))
 		:host server
 		:service (ecase connection-type
-			   (:starttls 143)
+			   ((:starttls :unencrypted) 143)
 			   (:plaintls 993))
 		:coding 'binary
 		:nowait t
@@ -66,7 +69,7 @@
      (cond
       ((string-prefix-p "open" string)
        (ecase (plist-get state-data :connection-type)
-	 (:starttls
+	 ((:starttls :unencrypted)
 	  ;; Wait for STARTTLS capability etc
 	  (list :wait-for-greeting state-data nil))
 	 (:plaintls
@@ -145,7 +148,8 @@
 
 (defun bic--advance-connection-state (fsm state-data capabilities)
   (cond
-   ((not (plist-get state-data :encrypted))
+   ((and (not (plist-get state-data :encrypted))
+	 (not (eq (plist-get state-data :connection-type) :unencrypted)))
     (if (member "STARTTLS" capabilities)
 	(progn
 	  (send-string (plist-get state-data :proc)
@@ -157,11 +161,18 @@
    ((not (plist-get state-data :authenticated))
     (let* ((server-mechanisms (cdr (assq :auth capabilities)))
 	   (mechanism (sasl-find-mechanism server-mechanisms)))
-      (if (null mechanism)
-	  (progn
-	    (message "No suitable mechanism found!  We support %s, server supports %s"
-		     sasl-mechanisms server-mechanisms)
-	    (list nil nil nil))
+      (cond
+       ((null mechanism)
+	(message "No suitable mechanism found!  We support %s, server supports %s"
+		 sasl-mechanisms server-mechanisms)
+	(list nil nil nil))
+       ((and (not bic-send-cleartext-password)
+	     (not (plist-get state-data :encrypted))
+	     (member (sasl-mechanism-name mechanism) '("PLAIN" "LOGIN")))
+	(message "Cleartext authentication not allowed!  Server offers %s"
+		 server-mechanisms)
+	(list nil nil nil))
+       (t
 	(let* ((client
 		(sasl-make-client
 		 mechanism
@@ -169,10 +180,16 @@
 		 "imap"
 		 (plist-get state-data :server)))
 	       (step (sasl-next-step client nil)))
-	  (bic--send fsm (concat "auth AUTHENTICATE " (sasl-mechanism-name mechanism) "\r\n"))
+	  ;; XXX: we can't send the AUTHENTICATE command here, because
+	  ;; sending data over a network connection means that we can
+	  ;; receive data as well, which causes a race condition
+	  ;; whereby the filter function being called with the server
+	  ;; response before we've moved on to the :sasl-auth state.
+	  ;; Thus we send the AUTHENTICATE command in the enter
+	  ;; function instead.
 	  (list :sasl-auth (plist-put
 			    (plist-put state-data :sasl-client client)
-			    :sasl-step step))))))))
+			    :sasl-step step)))))))))
 
 (define-state bic-connection :wait-for-starttls-response
   (fsm state-data event callback)
@@ -209,6 +226,13 @@
        (message "Got event %S" event)
        (list :wait-for-starttls-response state-data))))))
 
+(define-enter-state bic-connection :sasl-auth
+  (fsm state-data)
+  (let* ((client (plist-get state-data :sasl-client))
+	 (mechanism (sasl-client-mechanism client)))
+    (bic--send fsm (concat "auth AUTHENTICATE " (sasl-mechanism-name mechanism) "\r\n")))
+  (list state-data nil))
+
 (define-state bic-connection :sasl-auth
   (fsm state-data event callback)
   (pcase event
@@ -221,19 +245,35 @@
        (let ((data (substring line 2))
 	     (client (plist-get state-data :sasl-client))
 	     (step (plist-get state-data :sasl-step)))
-	 (sasl-step-set-data step (base64-decode-string data))
-	 (setq step (sasl-next-step client step))
+	 ;; If this is the first message from the server, and it is
+	 ;; empty, and the chosen mechanism requires the client to
+	 ;; send data first, then we shouldn't move to the next step
+	 ;; here.
+	 ;;
+	 ;; There is no way to ask the Emacs SASL library about
+	 ;; whether the client should send data first, so let's take
+	 ;; an empty message from the server as our cue.
+	 (unless (and (zerop (length data))
+		      (null (plist-get state-data :sasl-sent-message)))
+	   (sasl-step-set-data step (base64-decode-string data))
+	   (setq step (sasl-next-step client step)))
+	 ;; Update state-data before sending response, to avoid a race
+	 ;; condition.  plist-put only requires reassignment if the
+	 ;; list was initially empty, which we by now know is not the
+	 ;; case.
+	 (plist-put state-data :sasl-step step)
+	 (plist-put state-data :sasl-sent-message t)
 	 (bic--send fsm (concat (base64-encode-string (or (sasl-step-data step) "") t) "\r\n")
 		    :sensitive t)
 	 ;; XXX: check local success/failure, for mechanisms that
 	 ;; simultaneously authenticate the server
-	 (list :sasl-auth (plist-put state-data :sasl-step step))))
+	 (list :sasl-auth state-data)))
       ((string-prefix-p "auth " line)
        (pcase (bic--parse-line line)
 	 (`(,_ "OK" ,message)
 	  ;; XXX: check local success/failure here too
 	  (message "IMAP authentication successful: %s" message)
-	  (list :authenticated state-data))
+	  (list :authenticated (plist-put state-data :authenticated t)))
 	 (`(,_ "NO" ,message)
 	  (message "IMAP authentication failed: %s" message)
 	  ;; TODO: ask for better password?
