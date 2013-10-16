@@ -189,7 +189,9 @@
 	  ;; function instead.
 	  (list :sasl-auth (plist-put
 			    (plist-put state-data :sasl-client client)
-			    :sasl-step step)))))))))
+			    :sasl-step step)))))))
+   (t
+    (list :authenticated))))
 
 (define-state bic-connection :wait-for-starttls-response
   (fsm state-data event callback)
@@ -270,10 +272,25 @@
 	 (list :sasl-auth state-data)))
       ((string-prefix-p "auth " line)
        (pcase (bic--parse-line line)
-	 (`(,_ "OK" ,message)
+	 (`(,_ "OK" ,resp-text)
 	  ;; XXX: check local success/failure here too
-	  (message "IMAP authentication successful: %s" message)
-	  (list :authenticated (plist-put state-data :authenticated t)))
+	  (destructuring-bind (new-capabilities . text)
+	      (if (string-match "^\\[CAPABILITY \\([^]]*\\)\\] \\(.*\\)" resp-text)
+		  (cons (save-match-data
+			  (bic--parse-capabilities (match-string 1 resp-text)))
+			(match-string 2 resp-text))
+		(cons nil resp-text))
+	    (message "IMAP authentication successful: %s" text)
+	    (plist-put state-data :authenticated t)
+	    (plist-put state-data :capabilities new-capabilities)
+	    (plist-put state-data :sasl-client nil)
+	    (plist-put state-data :sasl-step nil)
+	    (if new-capabilities
+		;; The server saved us a roundtrip and sent
+		;; capabilities in the OK message.
+		(list :authenticated state-data)
+	      ;; Need to ask the server for capabilities.
+	      (list :wait-for-capabilities state-data))))
 	 (`(,_ "NO" ,message)
 	  (message "IMAP authentication failed: %s" message)
 	  ;; TODO: ask for better password?
