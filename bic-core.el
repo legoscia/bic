@@ -289,6 +289,61 @@
      (message "Got event %S" event)
      (list :sasl-auth state-data))))
 
+(define-state bic-connection :authenticated
+  (fsm state-data event callback)
+  (pcase event
+    (`(:cmd ,cmd)
+     (let* ((tag-number (or (plist-get state-data :next-tag) 0))
+	    (next-tag (1+ tag-number))
+	    (tag-string (number-to-string tag-number))
+	    (pending-commands
+	     ;; Need to keep commands in the correct order.  We
+	     ;; shouldn't have that many pending commands, so
+	     ;; appending all the time should be fine.
+	     (append (plist-get state-data :pending-commands)
+		     (list (cons tag-string callback)))))
+       (plist-put state-data :pending-commands pending-commands)
+       (plist-put state-data :next-tag next-tag)
+       (bic--send fsm (concat tag-string " " cmd "\r\n"))
+       (list :authenticated state-data)))
+
+    (`(:filter ,process ,data)
+     (bic--filter process data fsm)
+     (list :authenticated state-data))
+
+    (`(:line ,line)
+     (pcase (bic--parse-line line)
+       (`("*" ,type ,rest)
+	;; TODO: maybe send results early
+	(plist-put state-data :response-acc
+		   (cons (cons type rest) (plist-get state-data :response-acc))))
+       (`(,tag ,type ,rest)
+	(let* ((pending-commands (plist-get state-data :pending-commands))
+	       (entry (assoc tag pending-commands))
+	       (command-callback (cdr entry))
+	       (new-pending-commands (delq entry pending-commands))
+	       (response-acc (plist-get state-data :response-acc)))
+	  (plist-put state-data :response-acc nil)
+	  (plist-put state-data :pending-commands new-pending-commands)
+	  (funcall command-callback (list type rest response-acc))))
+       (_
+	(fsm-debug-output "Unexpected line: '%s'" line)))
+     (list :authenticated state-data))))
+
+(defun bic-command (fsm command callback)
+  "Send an IMAP command.
+COMMAND is a string containing an IMAP command minus the tag.
+CALLBACK is a function that takes one argument of the form
+\(RESPONSE TEXT RESPONSE-LINES), where RESPONSE is a string
+containing the response type, typically \"OK\", \"NO\" or
+\"BAD\", TEXT is the rest of the tagged response line, and
+RESPONSE-LINES is a list of (TYPE TEXT) entries, one for
+each untagged response line.
+
+The callback function will be called when the command has
+finished.  There is no immediate response."
+  (fsm-send fsm `(:cmd ,command) callback))
+
 (defun bic--negotiate-tls (state-data)
   (gnutls-negotiate :process (plist-get state-data :proc)
 		    :hostname (plist-get state-data :server)
