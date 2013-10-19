@@ -386,7 +386,6 @@ finished.  There is no immediate response."
 	(fsm-send fsm (list :line line))))))
 
 (cl-defun bic--send (fsm string &key sensitive)
-  ;; XXX: too many newlines?
   (bic--transcript fsm
 		   (concat "C: "
 			   (if sensitive
