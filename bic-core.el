@@ -38,7 +38,13 @@
 
 (define-state-machine bic-connection
   :start ((username server connection-type)
-	  "Start an IMAP connection."
+	  "Start an IMAP connection.
+USERNAME is the username to authenticate as.
+SERVER is the server to connect to.
+CONNECTION-TYPE is one of the following:
+- :starttls, connect to port 143 and request encryption
+- :plaintls, connect to port 993 and encrypt from the start
+- :unencrypted, connect to port 143 without encrypting"
 	  (list :connecting
 		(list :name (concat username "@" server)
 		      :username username
