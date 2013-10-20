@@ -37,7 +37,7 @@
   "If non-nil, allow sending passwords on unencrypted connections.")
 
 (define-state-machine bic-connection
-  :start ((username server connection-type &optional port)
+  :start ((username server connection-type &optional port callback)
 	  "Start an IMAP connection.
 USERNAME is the username to authenticate as.
 SERVER is the server to connect to.
@@ -45,13 +45,20 @@ CONNECTION-TYPE is one of the following:
 - :starttls, connect to port 143 and request encryption
 - :plaintls, connect to port 993 and encrypt from the start
 - :unencrypted, connect to port 143 without encrypting
-PORT, if given, overrides the port derived from CONNECTION-TYPE."
+PORT, if given, overrides the port derived from CONNECTION-TYPE.
+
+CALLBACK, if given, should be a function taking one argument.
+It will be called with :authenticated once authentication has
+completed successfully.  It will also be called with
+\(:disconnected KEYWORD REASON-STRING\) when the connection
+is closed."
 	  (list :connecting
 		(list :name (concat username "@" server)
 		      :username username
 		      :server server
 		      :port port
-		      :connection-type connection-type))))
+		      :connection-type connection-type
+		      :callback (or callback #'ignore)))))
 
 (define-enter-state bic-connection :connecting
   (fsm state-data)
@@ -92,14 +99,15 @@ PORT, if given, overrides the port derived from CONNECTION-TYPE."
 		       (plist-put state-data :encrypted t)
 		       :capabilities nil)))
 	    (error
-	     (message "Cannot negotiate TLS for %s: %s"
-		      (plist-get state-data :server)
-		      (error-message-string e))
-	     (list nil nil nil))))))
+	     (bic--fail state-data
+			:tls-failure
+			(format "Cannot negotiate TLS for %s: %s"
+				(plist-get state-data :server)
+				(error-message-string e))))))))
       ((string-prefix-p "failed" string)
-       ;; XXX: handle gracefully
-       (message "connection failed: %s" string)
-       (list nil nil nil))
+       (bic--fail state-data
+		  :connection-failed
+		  (format "connection failed: %s" string)))
       (t
        (message "Unknown sentinel event %S" string)
        (list :connecting state-data nil))))
@@ -121,8 +129,9 @@ PORT, if given, overrides the port derived from CONNECTION-TYPE."
 	    (list :wait-for-capabilities state-data)
 	  (bic--advance-connection-state fsm state-data capabilities)))
        (`(:bye ,text)
-	(message "Server wants to disconnect: %s" text)
-	(list nil nil nil))))
+	(bic--fail state-data
+		   :server-disconnect
+		   (format "Server wants to disconnect: %s" text)))))
     (event
      (message "Got event %S" event)
      (list :wait-for-greeting state-data))))
@@ -164,23 +173,25 @@ PORT, if given, overrides the port derived from CONNECTION-TYPE."
 	  (send-string (plist-get state-data :proc)
 		       "foo STARTTLS\r\n")
 	  (list :wait-for-starttls-response state-data))
-      ;; TODO
-      (message "STARTTLS not available!")
-      (list nil nil nil)))
+      (bic--fail state-data
+		 :starttls-not-available
+		 "STARTTLS not available!")))
    ((not (plist-get state-data :authenticated))
     (let* ((server-mechanisms (cdr (assq :auth capabilities)))
 	   (mechanism (sasl-find-mechanism server-mechanisms)))
       (cond
        ((null mechanism)
-	(message "No suitable mechanism found!  We support %s, server supports %s"
-		 sasl-mechanisms server-mechanisms)
-	(list nil nil nil))
+	(bic--fail state-data
+		   :sasl-mechanism-not-found
+		   (format "No suitable mechanism found!  We support %s, server supports %s"
+			   sasl-mechanisms server-mechanisms)))
        ((and (not bic-send-cleartext-password)
 	     (not (plist-get state-data :encrypted))
 	     (member (sasl-mechanism-name mechanism) '("PLAIN" "LOGIN")))
-	(message "Cleartext authentication not allowed!  Server offers %s"
-		 server-mechanisms)
-	(list nil nil nil))
+	(bic--fail state-data
+		   :sasl-cleartext-not-allowed
+		   (format "Cleartext authentication not allowed!  Server offers %s"
+			   server-mechanisms)))
        (t
 	(let* ((client
 		(sasl-make-client
@@ -222,17 +233,20 @@ PORT, if given, overrides the port derived from CONNECTION-TYPE."
 		    (plist-put state-data :encrypted t)
 		    :capabilities nil)))
 	 (error
-	  (message "Cannot negotiate STARTTLS for %s: %s"
-		   (plist-get state-data :server)
-		   (error-message-string e))
-	  (list nil nil nil))))
+	  (bic--fail state-data
+		     :tls-failure
+		     (format "Cannot negotiate STARTTLS for %s: %s"
+			     (plist-get state-data :server)
+			     (error-message-string e))))))
       ((string-prefix-p "foo BAD " line)
-       (message "Cannot negotiate STARTTLS: %s"
-		(substring line 8))
-       (list nil nil nil))
+       (bic--fail state-data
+		  :tls-failure
+		  (format "Cannot negotiate STARTTLS: %s"
+			  (substring line 8))))
       (t
-       (message "Unexpected response to STARTTTLS command: %s" line)
-       (list nil nil nil))
+       (bic--fail state-data
+		  :tls-failure
+		  (format "Unexpected response to STARTTTLS command: %s" line)))
       (event
        (message "Got event %S" event)
        (list :wait-for-starttls-response state-data))))))
@@ -301,19 +315,26 @@ PORT, if given, overrides the port derived from CONNECTION-TYPE."
 	      ;; Need to ask the server for capabilities.
 	      (list :wait-for-capabilities state-data))))
 	 (`(,_ "NO" ,message)
-	  (message "IMAP authentication failed: %s" message)
 	  ;; TODO: ask for better password?
-	  (list nil nil nil))
+	  (bic--fail state-data
+		     :authentication-failed
+		     (format "IMAP authentication failed: %s" message)))
 	 (`(,_ "BAD" ,message)
 	  ;; This shouldn't happen
-	  (message "Unexpected IMAP authentication error: %s" message)
-	  (list nil nil nil))))
+	  (bic--fail state-data
+		     :unexpected-error
+		     (format "Unexpected IMAP authentication error: %s" message)))))
       (t
        (message "Unexpected input: %s" line)
        (list nil nil nil))))
     (event
      (message "Got event %S" event)
      (list :sasl-auth state-data))))
+
+(define-enter-state bic-connection :authenticated
+  (fsm state-data)
+  (funcall (plist-get state-data :callback) :authenticated)
+  (list state-data nil))
 
 (define-state bic-connection :authenticated
   (fsm state-data event callback)
@@ -369,6 +390,31 @@ each untagged response line.
 The callback function will be called when the command has
 finished.  There is no immediate response."
   (fsm-send fsm `(:cmd ,command) callback))
+
+(defun bic--fail (state-data keyword reason)
+  (plist-put state-data :fail-keyword keyword)
+  (plist-put state-data :fail-reason reason)
+  (list nil state-data))
+
+(define-enter-state bic-connection nil
+  (fsm state-data)
+  ;; Delete the connection just to be sure it's gone.
+  (let ((proc (plist-get state-data :proc)))
+    (when (processp proc)
+      (delete-process proc)))
+  (let ((callback (plist-get state-data :callback))
+	(fail-keyword (or (plist-get state-data :fail-keyword)
+			  :unknown-reason))
+	(fail-reason (or (plist-get state-data :fail-reason)
+			 "Unexpected error")))
+    (message "IMAP connection closed: %s" fail-reason)
+    (funcall callback (list :disconnected fail-keyword fail-reason)))
+  (list nil nil))
+
+(define-state bic-connection nil
+  (fsm state-data event callback)
+  ;; Ignore all events
+  (list nil state-data))
 
 (defun bic--negotiate-tls (state-data)
   (gnutls-negotiate :process (plist-get state-data :proc)
