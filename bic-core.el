@@ -37,18 +37,20 @@
   "If non-nil, allow sending passwords on unencrypted connections.")
 
 (define-state-machine bic-connection
-  :start ((username server connection-type)
+  :start ((username server connection-type &optional port)
 	  "Start an IMAP connection.
 USERNAME is the username to authenticate as.
 SERVER is the server to connect to.
 CONNECTION-TYPE is one of the following:
 - :starttls, connect to port 143 and request encryption
 - :plaintls, connect to port 993 and encrypt from the start
-- :unencrypted, connect to port 143 without encrypting"
+- :unencrypted, connect to port 143 without encrypting
+PORT, if given, overrides the port derived from CONNECTION-TYPE."
 	  (list :connecting
 		(list :name (concat username "@" server)
 		      :username username
 		      :server server
+		      :port port
 		      :connection-type connection-type))))
 
 (define-enter-state bic-connection :connecting
@@ -59,9 +61,10 @@ CONNECTION-TYPE is one of the following:
 		:name (concat "bic-" server)
 		:buffer (generate-new-buffer (concat "bic-" server))
 		:host server
-		:service (ecase connection-type
-			   ((:starttls :unencrypted) 143)
-			   (:plaintls 993))
+		:service (or (plist-get state-data :port)
+			     (ecase connection-type
+			       ((:starttls :unencrypted) 143)
+			       (:plaintls 993)))
 		:coding 'binary
 		:nowait t
 		:filter (fsm-make-filter fsm)
