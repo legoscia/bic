@@ -211,7 +211,7 @@ is closed."
 			    (plist-put state-data :sasl-client client)
 			    :sasl-step step)))))))
    (t
-    (list :authenticated))))
+    (list :authenticated state-data))))
 
 (define-state bic-connection :wait-for-starttls-response
   (fsm state-data event callback)
