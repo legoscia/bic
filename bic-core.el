@@ -153,7 +153,7 @@ is closed."
 	(let ((capabilities (bic--parse-capabilities capabilities-string)))
 	  (list :wait-for-capabilities
 		(plist-put state-data :capabilities capabilities))))
-       (`("foo" "OK" ,_)
+       (`("foo" :ok . ,_)
 	(bic--advance-connection-state
 	 fsm state-data
 	 (plist-get state-data :capabilities)))
@@ -293,16 +293,14 @@ is closed."
 	 ;; XXX: check local success/failure, for mechanisms that
 	 ;; simultaneously authenticate the server
 	 (list :sasl-auth state-data)))
-      ((string-prefix-p "auth " line)
+      (t
        (pcase (bic--parse-line line)
-	 (`(,_ "OK" ,resp-text)
+	 (`("auth" :ok . ,plist)
 	  ;; XXX: check local success/failure here too
-	  (destructuring-bind (new-capabilities . text)
-	      (if (string-match "^\\[CAPABILITY \\([^]]*\\)\\] \\(.*\\)" resp-text)
-		  (cons (save-match-data
-			  (bic--parse-capabilities (match-string 1 resp-text)))
-			(match-string 2 resp-text))
-		(cons nil resp-text))
+	  (let ((new-capabilities
+		 (when (string= (plist-get plist :code) "CAPABILITY")
+		   (bic--parse-capabilities (plist-get plist :data))))
+		(text (plist-get plist :text)))
 	    (message "IMAP authentication successful: %s" text)
 	    (plist-put state-data :authenticated t)
 	    (plist-put state-data :capabilities new-capabilities)
@@ -314,19 +312,26 @@ is closed."
 		(list :authenticated state-data)
 	      ;; Need to ask the server for capabilities.
 	      (list :wait-for-capabilities state-data))))
-	 (`(,_ "NO" ,message)
+	 (`("auth" :no . ,plist)
 	  ;; TODO: ask for better password?
 	  (bic--fail state-data
 		     :authentication-failed
-		     (format "IMAP authentication failed: %s" message)))
-	 (`(,_ "BAD" ,message)
+		     (format "IMAP authentication failed: %s"
+			     (plist-get plist :text))))
+	 (`("auth" :bad . ,plist)
 	  ;; This shouldn't happen
 	  (bic--fail state-data
 		     :unexpected-error
-		     (format "Unexpected IMAP authentication error: %s" message)))))
-      (t
-       (message "Unexpected input: %s" line)
-       (list nil nil nil))))
+		     (format "Unexpected IMAP authentication error: %s"
+			     (plist-get plist :text))))
+	 (`("*" ,_ . ,_)
+	  ;; Untagged responses can arrive at any time (2.2.2, RFC
+	  ;; 3501).  Let's ignore it and hope it wasn't important.
+	  (list :sasl-auth state-data))
+	 (_
+	  (bic--fail state-data
+	  (message "Unexpected input: %s" line)
+	  (list nil nil nil)))))))
     (event
      (message "Got event %S" event)
      (list :sasl-auth state-data))))
@@ -360,11 +365,11 @@ is closed."
 
     (`(:line ,line)
      (pcase (bic--parse-line line)
-       (`("*" ,type ,rest)
+       (`("*" ,type . ,rest)
 	;; TODO: maybe send results early
 	(plist-put state-data :response-acc
 		   (cons (cons type rest) (plist-get state-data :response-acc))))
-       (`(,tag ,type ,rest)
+       (`(,tag ,type . ,rest)
 	(let* ((pending-commands (plist-get state-data :pending-commands))
 	       (entry (assoc tag pending-commands))
 	       (command-callback (cdr entry))
@@ -457,19 +462,15 @@ finished.  There is no immediate response."
       (insert string))))
   
 (defun bic--parse-greeting (line)
-  (cond
-   ((string-prefix-p "* BYE " line)
-    (list :bye (substring line 6)))
-   ((string-prefix-p "* OK " line)
-    (let ((resp-text (substring line 5)))
-      (if (string-match "\\[CAPABILITY \\([^]]*\\)\\] \\(.*\\)" line)
-	  (let ((capabilities-string (match-string 1 line))
-		(text (match-string 2 line)))
-	    (list :ok (bic--parse-capabilities capabilities-string) text))
-	(list :ok nil resp-text))))
-   ;; TODO: PREAUTH
-   (t
-    (error "Unexpected greeting: %s" line))))
+  (pcase (bic--parse-line line)
+    (`("*" ,(and (or :ok :bye) type) . ,plist)
+     (if (string= "CAPABILITY" (plist-get plist :code))
+	 (list type (bic--parse-capabilities (plist-get plist :data))
+	       (plist-get plist :text))
+       (list type nil (plist-get plist :text))))
+    ;; TODO: PREAUTH
+    (_
+     (error "Unexpected greeting: %s" line))))
 
 (defun bic--parse-capabilities (string)
   (let ((start 0) capabilities auth)
@@ -487,7 +488,105 @@ finished.  There is no immediate response."
     (let ((tag (match-string 1 line))
 	  (type (match-string 2 line))
 	  (rest (match-string 3 line)))
-      (list tag type rest))))
+      (pcase tag
+	("*"
+;;; One of:
+;;;
+;;; response-data   = "*" SP (resp-cond-state / resp-cond-bye /
+;;;                   mailbox-data / message-data / capability-data) CRLF
+;;;
+;;; response-fatal  = "*" SP resp-cond-bye CRLF
+;;;                     ; Server closes connection immediately
+	 (pcase type
+;;; resp-cond-bye   = "BYE" SP resp-text
+;;;
+	   ("BYE"
+	    (list tag :bye rest))
+	   ((or "OK" "NO" "BAD")
+;;; resp-cond-state = ("OK" / "NO" / "BAD") SP resp-text
+;;;                     ; Status condition
+	    (cons tag (bic--parse-resp-text type rest)))
+;;; mailbox-data    =  "FLAGS" SP flag-list / "LIST" SP mailbox-list /
+;;;                    "LSUB" SP mailbox-list / "SEARCH" *(SP nz-number) /
+;;;                    "STATUS" SP mailbox SP "(" [status-att-list] ")" /
+;;;                    number SP "EXISTS" / number SP "RECENT"
+	   ((or "LIST" "LSUB")
+;;; mailbox-list    = "(" [mbx-list-flags] ")" SP
+;;;                    (DQUOTE QUOTED-CHAR DQUOTE / nil) SP mailbox
+	    (unless (string-match "(\\([^)]*\\)) \\(NIL\\|\".\"\\|\"\\\\\"\"\\|\"\\\\\\\\\"\\) \\(.*\\)" rest)
+	      (error "Malformed response: %S" line))
+	    (let ((mailbox-flags (match-string 1 rest))
+		  (separator (match-string 2 rest))
+		  (mailbox-name (match-string 3 rest)))
+	      (list tag type
+		    :flags (split-string mailbox-flags " ")
+		    :separator (cond
+				((string= (upcase separator) "NIL")
+				 nil)
+				(t
+				 (bic--parse-string separator)))
+		    :name (cond
+			   ((string= (upcase mailbox-name) "INBOX")
+			    "INBOX")
+			   (t
+			    (bic--parse-string mailbox-name))))))
+	   (_
+	    (list tag type rest))))
+	(_
+	 ;; We have a tag.  `type' must be "OK", "NO" or "BAD".
+	 (pcase type
+	   ((or "OK" "NO" "BAD")
+	    (cons tag (bic--parse-resp-text type rest)))
+	   (t
+	    (error "Unexpected input: %S" line))))))))
+
+(defun bic--parse-resp-text (type resp-text)
+;;; resp-text       = ["[" resp-text-code "]" SP] text
+;;;
+;;; resp-text-code  = "ALERT" /
+;;;                   "BADCHARSET" [SP "(" astring *(SP astring) ")" ] /
+;;;                   capability-data / "PARSE" /
+;;;                   "PERMANENTFLAGS" SP "("
+;;;                   [flag-perm *(SP flag-perm)] ")" /
+;;;                   "READ-ONLY" / "READ-WRITE" / "TRYCREATE" /
+;;;                   "UIDNEXT" SP nz-number / "UIDVALIDITY" SP nz-number /
+;;;                   "UNSEEN" SP nz-number /
+;;;                   atom [SP 1*<any TEXT-CHAR except "]">]
+  ;; TODO: find right amount of greediness.  Currently, we assume that
+  ;; 'text' does not contain a right square bracket.
+  (if (string-match "\\[\\([^]\s]+\\)\\(?: \\([^]]*\\)\\)?\\] \\(.*\\)" resp-text)
+      (let ((resp-text-code (match-string 1 resp-text))
+	    (resp-text-data (match-string 2 resp-text))
+	    (text (match-string 3 resp-text)))
+	(list (intern (concat ":" (downcase type)))
+	      :code resp-text-code
+	      :data resp-text-data
+	      :text text))
+    (list (intern (concat ":" (downcase type))) :text resp-text)))
+
+(defun bic--parse-string (quoted)
+  ;; TODO: accept literals as well as quoted strings
+;;; string          = quoted / literal
+;;;
+;;; quoted          = DQUOTE *QUOTED-CHAR DQUOTE
+;;;
+;;; QUOTED-CHAR     = <any TEXT-CHAR except quoted-specials> /
+;;;                   "\" quoted-specials
+;;;
+;;; quoted-specials = DQUOTE / "\"
+  (cond
+   ((and (eq (aref quoted 0) ?\")
+	 (eq (aref quoted (1- (length quoted))) ?\"))
+    (let ((string (substring quoted 1 (1- (length quoted))))
+	  (idx 0))
+      (while (and (< idx (length string))
+		  (setq idx (cl-position ?\\ string :start idx)))
+	;; We found a backslash.  It escapes the following character.
+	(setf (substring string idx (+ idx 2)) (string (aref string (1+ idx))))
+	(incf idx))
+      string))
+   (t
+    (error "Not a quoted string: %s" quoted))))
       
 (provide 'bic-core)
 ;;; bic-core.el ends here
