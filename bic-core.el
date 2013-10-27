@@ -27,6 +27,8 @@
 (require 'fsm)
 (require 'sasl)
 (require 'gnutls)
+(require 'auth-source)
+(require 'password-cache)
 
 (defvar bic-transcript-buffer "*bic-transcript-%s*")
 
@@ -199,6 +201,7 @@ is closed."
 		 (plist-get state-data :username)
 		 "imap"
 		 (plist-get state-data :server)))
+	       (sasl-read-passphrase (bic--read-passphrase-function state-data))
 	       (step (sasl-next-step client nil)))
 	  ;; XXX: we can't send the AUTHENTICATE command here, because
 	  ;; sending data over a network connection means that we can
@@ -269,7 +272,8 @@ is closed."
       ((string-prefix-p "+ " line)
        (let ((data (substring line 2))
 	     (client (plist-get state-data :sasl-client))
-	     (step (plist-get state-data :sasl-step)))
+	     (step (plist-get state-data :sasl-step))
+	     (sasl-read-passphrase (bic--read-passphrase-function state-data)))
 	 ;; If this is the first message from the server, and it is
 	 ;; empty, and the chosen mechanism requires the client to
 	 ;; send data first, then we shouldn't move to the next step
@@ -335,6 +339,35 @@ is closed."
     (event
      (message "Got event %S" event)
      (list :sasl-auth state-data))))
+
+(defun bic--read-passphrase-function (state-data)
+  (lambda (prompt)
+    (let ((found (car
+		  (auth-source-search
+		   :user (plist-get state-data :username)
+		   :host (plist-get state-data :server)
+		   :port
+		   (let ((symbolic (ecase (plist-get state-data :connection-type)
+				     ((:starttls :unencrypted)
+				      "imap")
+				     (:plaintls
+				      "imaps")))
+			 (numeric (plist-get state-data :port)))
+		     (if numeric
+			 (list symbolic numeric)
+		       symbolic))
+		   :max 1
+		   :require '(:secret)))))
+      ;; Copy the password, as sasl.el wants to erase it.
+      (copy-sequence
+       (if found
+	   ;; Got it from auth-source.
+	   (let ((secret (plist-get found :secret)))
+	     (if (functionp secret)
+		 (funcall secret)
+	       secret))
+	 ;; Ask the user.
+	 (read-passwd prompt))))))
 
 (define-enter-state bic-connection :authenticated
   (fsm state-data)
