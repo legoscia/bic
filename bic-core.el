@@ -334,8 +334,8 @@ is closed."
 	  (list :sasl-auth state-data))
 	 (_
 	  (bic--fail state-data
-	  (message "Unexpected input: %s" line)
-	  (list nil nil nil)))))))
+		     :unexpected-input
+		     (format "Unexpected input: %s" line)))))))
     (event
      (message "Got event %S" event)
      (list :sasl-auth state-data))))
