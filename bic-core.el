@@ -49,11 +49,12 @@ CONNECTION-TYPE is one of the following:
 - :unencrypted, connect to port 143 without encrypting
 PORT, if given, overrides the port derived from CONNECTION-TYPE.
 
-CALLBACK, if given, should be a function taking one argument.
-It will be called with :authenticated once authentication has
-completed successfully.  It will also be called with
-\(:disconnected KEYWORD REASON-STRING\) when the connection
-is closed."
+CALLBACK, if given, should be a function taking two arguments.
+The first argument is always the FSM (can be compared with `eq').
+It will be called with :authenticated as the second argument once
+authentication has completed successfully.  It will also be
+called with \(:disconnected KEYWORD REASON-STRING\) when the
+connection is closed."
 	  (list :connecting
 		(list :name (concat username "@" server)
 		      :username username
@@ -371,7 +372,7 @@ is closed."
 
 (define-enter-state bic-connection :authenticated
   (fsm state-data)
-  (funcall (plist-get state-data :callback) :authenticated)
+  (funcall (plist-get state-data :callback) fsm :authenticated)
   (list state-data nil))
 
 (define-state bic-connection :authenticated
@@ -446,7 +447,7 @@ finished.  There is no immediate response."
 	(fail-reason (or (plist-get state-data :fail-reason)
 			 "Unexpected error")))
     (message "IMAP connection closed: %s" fail-reason)
-    (funcall callback (list :disconnected fail-keyword fail-reason)))
+    (funcall callback fsm (list :disconnected fail-keyword fail-reason)))
   (list nil nil))
 
 (define-state bic-connection nil
