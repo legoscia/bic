@@ -24,6 +24,7 @@
 
 ;;; Code:
 
+(require 'cl-lib)
 (require 'fsm)
 (require 'sasl)
 (require 'gnutls)
@@ -72,7 +73,7 @@ connection is closed."
 		:buffer (generate-new-buffer (concat "bic-" server))
 		:host server
 		:service (or (plist-get state-data :port)
-			     (ecase connection-type
+			     (cl-ecase connection-type
 			       ((:starttls :unencrypted) 143)
 			       (:plaintls 993)))
 		:coding 'binary
@@ -87,7 +88,7 @@ connection is closed."
     (`(:sentinel ,_ ,string)
      (cond
       ((string-prefix-p "open" string)
-       (ecase (plist-get state-data :connection-type)
+       (cl-ecase (plist-get state-data :connection-type)
 	 ((:starttls :unencrypted)
 	  ;; Wait for STARTTLS capability etc
 	  (list :wait-for-greeting state-data nil))
@@ -348,7 +349,7 @@ connection is closed."
 		   :user (plist-get state-data :username)
 		   :host (plist-get state-data :server)
 		   :port
-		   (let ((symbolic (ecase (plist-get state-data :connection-type)
+		   (let ((symbolic (cl-ecase (plist-get state-data :connection-type)
 				     ((:starttls :unencrypted)
 				      "imap")
 				     (:plaintls
@@ -617,7 +618,7 @@ finished.  There is no immediate response."
 		  (setq idx (cl-position ?\\ string :start idx)))
 	;; We found a backslash.  It escapes the following character.
 	(setf (substring string idx (+ idx 2)) (string (aref string (1+ idx))))
-	(incf idx))
+	(cl-incf idx))
       string))
    (t
     (error "Not a quoted string: %s" quoted))))
