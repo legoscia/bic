@@ -271,8 +271,12 @@ connection is closed."
      (list :sasl-auth state-data))
     (`(:line ,line)
      (cond
-      ((string-prefix-p "+ " line)
-       (let ((data (substring line 2))
+      ((string-prefix-p "+" line)
+       ;; I think this should be "+ " in the case of empty data, but
+       ;; Exchange doesn't do that.
+       (let ((data (if (string= line "+")
+		       ""
+		     (substring line 2)))
 	     (client (plist-get state-data :sasl-client))
 	     (step (plist-get state-data :sasl-step))
 	     (sasl-read-passphrase (bic--read-passphrase-function state-data)))
