@@ -522,11 +522,11 @@ finished.  There is no immediate response."
     (cons (cons :auth auth) capabilities)))
 
 (defun bic--parse-line (line)
-  (if (not (string-match "^\\([^ ]+\\) \\([^ ]+\\) \\(.*\\)$" line))
+  (if (not (string-match "^\\([^ ]+\\) \\([^ ]+\\)\\(?: \\(.*\\)\\)?$" line))
       :unexpected
     (let ((tag (match-string 1 line))
 	  (type (match-string 2 line))
-	  (rest (match-string 3 line)))
+	  (rest (or (match-string 3 line) "")))
       (pcase tag
 	("*"
 ;;; One of:
