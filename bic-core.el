@@ -569,6 +569,8 @@ finished.  There is no immediate response."
 			    "INBOX")
 			   (t
 			    (bic--parse-string mailbox-name))))))
+	   ("SEARCH"
+	    (list tag type :results (split-string rest)))
 	   (_
 	    (list tag type rest))))
 	(_
