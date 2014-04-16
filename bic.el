@@ -165,7 +165,7 @@
      ;; TODO: download the messages in question
      (pcase search-response
        (`(:ok ,_ ,search-data)
-	(let ((search-results (plist-get (cdr (assoc "SEARCH" search-data)) :results)))
+	(let ((search-results (cdr (assoc "SEARCH" search-data))))
 	  (when search-results
 	    ;; These should be UIDs, since they are a response to a UID
 	    ;; SEARCH command.
@@ -220,7 +220,12 @@ It also includes underscore, which is used as an escape character.")
   (let ((mailboxes
 	 (mapcar
 	  ;; TODO: What about \Noselect?
-	  (lambda (x) (plist-get (cdr x) :name))
+	  (lambda (x)
+	    (pcase x
+	      (`("LIST" ,_ ,_ ,mailbox-name)
+	       mailbox-name)
+	      (_
+	       (error "Unexpected LIST response: %S" x))))
 	  list-data)))
     (mapc
      (lambda (mailbox-name)

@@ -153,8 +153,8 @@ connection is closed."
      (list :wait-for-capabilities state-data))
     (`(:line ,line)
      (pcase (bic--parse-line line)
-       (`("*" "CAPABILITY" ,capabilities-string)
-	(let ((capabilities (bic--parse-capabilities capabilities-string)))
+       (`("*" "CAPABILITY" . ,capability-strings)
+	(let ((capabilities (bic--parse-capabilities capability-strings)))
 	  (list :wait-for-capabilities
 		(plist-put state-data :capabilities capabilities))))
        (`("foo" :ok . ,_)
@@ -162,8 +162,9 @@ connection is closed."
 	 fsm state-data
 	 (plist-get state-data :capabilities)))
        (_
-	(message "Unexpected: %s" line)
-	(list nil nil nil))))
+	(bic--fail state-data
+		   :unexpected-input
+		   (format "Unexpected: %s" line)))))
     (event
      (message "Got event %S" event)
      (list :wait-for-capabilities state-data))))
@@ -225,36 +226,36 @@ connection is closed."
      (bic--filter process data fsm)
      (list :wait-for-starttls-response state-data))
     (`(:line ,line)
-     (cond
-      ((string-prefix-p "foo OK " line)
-       (condition-case e
-	   (progn
-	     (bic--negotiate-tls state-data)
-	     ;; No error?  Connection encrypted!
-	     (message "STARTTLS negotiated")
-	     ;; Forget capabilities and ask again on encrypted connection.
-	     (list :wait-for-capabilities
-		   (plist-put
-		    (plist-put state-data :encrypted t)
-		    :capabilities nil)))
-	 (error
-	  (bic--fail state-data
-		     :tls-failure
-		     (format "Cannot negotiate STARTTLS for %s: %s"
-			     (plist-get state-data :server)
-			     (error-message-string e))))))
-      ((string-prefix-p "foo BAD " line)
-       (bic--fail state-data
-		  :tls-failure
-		  (format "Cannot negotiate STARTTLS: %s"
-			  (substring line 8))))
-      (t
-       (bic--fail state-data
-		  :tls-failure
-		  (format "Unexpected response to STARTTTLS command: %s" line)))
-      (event
-       (message "Got event %S" event)
-       (list :wait-for-starttls-response state-data))))))
+     (pcase (bic--parse-line line)
+       (`("foo" :ok . ,_)
+	(condition-case e
+	    (progn
+	      (bic--negotiate-tls state-data)
+	      ;; No error?  Connection encrypted!
+	      (message "STARTTLS negotiated")
+	      ;; Forget capabilities and ask again on encrypted connection.
+	      (list :wait-for-capabilities
+		    (plist-put
+		     (plist-put state-data :encrypted t)
+		     :capabilities nil)))
+	  (error
+	   (bic--fail state-data
+		      :tls-failure
+		      (format "Cannot negotiate STARTTLS for %s: %s"
+			      (plist-get state-data :server)
+			      (error-message-string e))))))
+       (`("foo" :bad . ,plist)
+	(bic--fail state-data
+		   :tls-failure
+		   (format "Cannot negotiate STARTTLS: %s"
+			   (plist-get plist :text))))
+       (_
+	(bic--fail state-data
+		   :tls-failure
+		   (format "Unexpected response to STARTTTLS command: %s" line)))))
+    (event
+     (message "Got event %S" event)
+     (list :wait-for-starttls-response state-data))))
 
 (define-enter-state bic-connection :sasl-auth
   (fsm state-data)
@@ -270,78 +271,72 @@ connection is closed."
      (bic--filter process data fsm :sensitive (apply-partially #'string-prefix-p "+ "))
      (list :sasl-auth state-data))
     (`(:line ,line)
-     (cond
-      ((string-prefix-p "+" line)
-       ;; I think this should be "+ " in the case of empty data, but
-       ;; Exchange doesn't do that.
-       (let ((data (if (string= line "+")
-		       ""
-		     (substring line 2)))
-	     (client (plist-get state-data :sasl-client))
-	     (step (plist-get state-data :sasl-step))
-	     (sasl-read-passphrase (bic--read-passphrase-function state-data)))
-	 ;; If this is the first message from the server, and it is
-	 ;; empty, and the chosen mechanism requires the client to
-	 ;; send data first, then we shouldn't move to the next step
-	 ;; here.
-	 ;;
-	 ;; There is no way to ask the Emacs SASL library about
-	 ;; whether the client should send data first, so let's take
-	 ;; an empty message from the server as our cue.
-	 (unless (and (zerop (length data))
-		      (null (plist-get state-data :sasl-sent-message)))
-	   (sasl-step-set-data step (base64-decode-string data))
-	   (setq step (sasl-next-step client step)))
-	 ;; Update state-data before sending response, to avoid a race
-	 ;; condition.  plist-put only requires reassignment if the
-	 ;; list was initially empty, which we by now know is not the
-	 ;; case.
-	 (plist-put state-data :sasl-step step)
-	 (plist-put state-data :sasl-sent-message t)
-	 (bic--send fsm (concat (base64-encode-string (or (sasl-step-data step) "") t) "\r\n")
-		    :sensitive t)
-	 ;; XXX: check local success/failure, for mechanisms that
-	 ;; simultaneously authenticate the server
-	 (list :sasl-auth state-data)))
-      (t
-       (pcase (bic--parse-line line)
-	 (`("auth" :ok . ,plist)
-	  ;; XXX: check local success/failure here too
-	  (let ((new-capabilities
-		 (when (string= (plist-get plist :code) "CAPABILITY")
-		   (bic--parse-capabilities (plist-get plist :data))))
-		(text (plist-get plist :text)))
-	    (message "IMAP authentication successful: %s" text)
-	    (plist-put state-data :authenticated t)
-	    (plist-put state-data :capabilities new-capabilities)
-	    (plist-put state-data :sasl-client nil)
-	    (plist-put state-data :sasl-step nil)
-	    (if new-capabilities
-		;; The server saved us a roundtrip and sent
-		;; capabilities in the OK message.
-		(list :authenticated state-data)
-	      ;; Need to ask the server for capabilities.
-	      (list :wait-for-capabilities state-data))))
-	 (`("auth" :no . ,plist)
-	  ;; TODO: ask for better password?
-	  (bic--fail state-data
-		     :authentication-failed
-		     (format "IMAP authentication failed: %s"
-			     (plist-get plist :text))))
-	 (`("auth" :bad . ,plist)
-	  ;; This shouldn't happen
-	  (bic--fail state-data
-		     :unexpected-error
-		     (format "Unexpected IMAP authentication error: %s"
-			     (plist-get plist :text))))
-	 (`("*" ,_ . ,_)
-	  ;; Untagged responses can arrive at any time (2.2.2, RFC
-	  ;; 3501).  Let's ignore it and hope it wasn't important.
-	  (list :sasl-auth state-data))
-	 (_
-	  (bic--fail state-data
-		     :unexpected-input
-		     (format "Unexpected input: %s" line)))))))
+     (message "Got: %S" (bic--parse-line line))
+     (pcase (bic--parse-line line)
+       (`("+" ,data)
+	(let ((client (plist-get state-data :sasl-client))
+	      (step (plist-get state-data :sasl-step))
+	      (sasl-read-passphrase (bic--read-passphrase-function state-data)))
+	  ;; If this is the first message from the server, and it is
+	  ;; empty, and the chosen mechanism requires the client to
+	  ;; send data first, then we shouldn't move to the next step
+	  ;; here.
+	  ;;
+	  ;; There is no way to ask the Emacs SASL library about
+	  ;; whether the client should send data first, so let's take
+	  ;; an empty message from the server as our cue.
+	  (unless (and (zerop (length data))
+		       (null (plist-get state-data :sasl-sent-message)))
+	    (sasl-step-set-data step (base64-decode-string data))
+	    (setq step (sasl-next-step client step)))
+	  ;; Update state-data before sending response, to avoid a race
+	  ;; condition.  plist-put only requires reassignment if the
+	  ;; list was initially empty, which we by now know is not the
+	  ;; case.
+	  (plist-put state-data :sasl-step step)
+	  (plist-put state-data :sasl-sent-message t)
+	  (bic--send fsm (concat (base64-encode-string (or (sasl-step-data step) "") t) "\r\n")
+		     :sensitive t)
+	  ;; XXX: check local success/failure, for mechanisms that
+	  ;; simultaneously authenticate the server
+	  (list :sasl-auth state-data)))
+       (`("auth" :ok . ,plist)
+	;; XXX: check local success/failure here too
+	(let ((new-capabilities
+	       (when (string= (plist-get plist :code) "CAPABILITY")
+		 (bic--parse-capabilities (split-string (plist-get plist :data)))))
+	      (text (plist-get plist :text)))
+	  (message "IMAP authentication successful: %s" text)
+	  (plist-put state-data :authenticated t)
+	  (plist-put state-data :capabilities new-capabilities)
+	  (plist-put state-data :sasl-client nil)
+	  (plist-put state-data :sasl-step nil)
+	  (if new-capabilities
+	      ;; The server saved us a roundtrip and sent
+	      ;; capabilities in the OK message.
+	      (list :authenticated state-data)
+	    ;; Need to ask the server for capabilities.
+	    (list :wait-for-capabilities state-data))))
+       (`("auth" :no . ,plist)
+	;; TODO: ask for better password?
+	(bic--fail state-data
+		   :authentication-failed
+		   (format "IMAP authentication failed: %s"
+			   (plist-get plist :text))))
+       (`("auth" :bad . ,plist)
+	;; This shouldn't happen
+	(bic--fail state-data
+		   :unexpected-error
+		   (format "Unexpected IMAP authentication error: %s"
+			   (plist-get plist :text))))
+       (`("*" ,_ . ,_)
+	;; Untagged responses can arrive at any time (2.2.2, RFC
+	;; 3501).  Let's ignore it and hope it wasn't important.
+	(list :sasl-auth state-data))
+       (_
+	(bic--fail state-data
+		   :unexpected-input
+		   (format "Unexpected input: %s" line)))))
     (event
      (message "Got event %S" event)
      (list :sasl-auth state-data))))
@@ -466,23 +461,91 @@ finished.  There is no immediate response."
 		    :verify-hostname-error (not bic-ignore-tls-errors)
 		    :verify-error (not bic-ignore-tls-errors)))
 
+(defvar bic--unread-start-marker nil)
+(make-variable-buffer-local 'bic--unread-start-marker)
+
+(defvar bic--literal-start-marker nil)
+(make-variable-buffer-local 'bic--literal-start-marker)
+
+(defvar bic--literal-expected-length nil)
+(make-variable-buffer-local 'bic--literal-expected-length)
+
+(defvar bic--line-acc nil)
+(make-variable-buffer-local 'bic--line-acc)
+
 (cl-defun bic--filter (process data fsm &key sensitive)
   (with-current-buffer (process-buffer process)
+    (unless bic--unread-start-marker
+      (setq bic--unread-start-marker (point-min-marker)))
+
     (goto-char (point-max))
     (insert data)
 
+    (stop-process process)
+    ;; Handle input as long as there is something left to handle.
+    ;; bic--read-input should return t in this case, and move either
+    ;; bic--unread-start-marker or bic--literal-start-marker.
+    ;; Double-check that we don't get stuck in an infinite loop.
+    (unwind-protect
+	(cl-flet
+	    ((current-progress
+	      ()
+	      (list (and bic--unread-start-marker
+			 (marker-position bic--unread-start-marker))
+		    (and bic--literal-start-marker
+			 (marker-position bic--literal-start-marker)))))
+	  (let ((previous (current-progress)))
+	    (while (bic--read-input fsm process sensitive)
+	      (when (equal previous (current-progress))
+		(error "no progress"))
+	      (setq previous (current-progress)))))
+      (continue-process process))))
+
+(defun bic--read-input (fsm process sensitive)
+  "Read what the server sent, and send as :line messages to FSM.
+Keep calling this function until it returns nil."
+  (cond
+   ((null bic--literal-start-marker)
     ;; Find complete lines, terminated by CRLF
-    (goto-char (point-min))
-    (while (search-forward "\r\n" nil t)
-      (let* ((line-crlf (delete-and-extract-region (point-min) (match-end 0)))
-	     (line (substring line-crlf 0 -2)))
-	(bic--transcript fsm (concat "S: "
-				     (if (and sensitive (funcall sensitive line))
-					 "<omitted>"
-				       line)
-				     "\n"))
-	;; Send the line as an event to the FSM
-	(fsm-send fsm (list :line line))))))
+    (goto-char bic--unread-start-marker)
+    (when (search-forward "\r\n" nil t)
+      (let* ((line-end (match-end 0))
+	     (received-line (buffer-substring
+			     bic--unread-start-marker
+			     (match-beginning 0))))
+	(bic--transcript
+	 fsm
+	 (concat "S: "
+		 (if (and sensitive (funcall sensitive received-line))
+		     "<omitted>"
+		   received-line)
+		 "\n"))
+	;; Does a literal start on this line?
+	(if (string-match "{\\([0-9]+\\)}$" received-line)
+	    (progn
+	      (push (substring received-line 0 (match-beginning 0))
+		    bic--line-acc)
+	      (setq bic--literal-start-marker (copy-marker line-end))
+	      (setq bic--literal-expected-length
+		    (string-to-number (match-string 1 received-line)))
+	      t)
+	  ;; Send the line as an event to the FSM
+	  (let ((line (nreverse (cons received-line bic--line-acc))))
+	    (setq bic--line-acc nil)
+	    (set-marker bic--unread-start-marker line-end)
+	    (fsm-send fsm (list :line line))
+	    t)))))
+   ((and bic--literal-start-marker
+	 (>= (- (point-max) bic--literal-start-marker)
+	     bic--literal-expected-length))
+    ;; The literal is complete.  Save the markers in our list, and
+    ;; keep parsing.
+    (bic--transcript fsm (format "S: <%d bytes omitted>\n" bic--literal-expected-length))
+    (let ((literal-end (+ bic--literal-start-marker bic--literal-expected-length)))
+      (push (cons bic--literal-start-marker (copy-marker literal-end)) bic--line-acc)
+      (setq bic--literal-start-marker nil)
+      (set-marker bic--unread-start-marker literal-end)
+      t))))
 
 (cl-defun bic--send (fsm string &key sensitive)
   (bic--transcript fsm
@@ -499,87 +562,110 @@ finished.  There is no immediate response."
     (save-excursion
       (goto-char (point-max))
       (insert string))))
-  
+
 (defun bic--parse-greeting (line)
   (pcase (bic--parse-line line)
     (`("*" ,(and (or :ok :bye) type) . ,plist)
      (if (string= "CAPABILITY" (plist-get plist :code))
-	 (list type (bic--parse-capabilities (plist-get plist :data))
+	 (list type (bic--parse-capabilities
+		     (split-string (plist-get plist :data)))
 	       (plist-get plist :text))
        (list type nil (plist-get plist :text))))
     ;; TODO: PREAUTH
     (_
      (error "Unexpected greeting: %s" line))))
 
-(defun bic--parse-capabilities (string)
-  (let ((start 0) capabilities auth)
-    (while (string-match "[^ ]+" string start)
-      (setq start (match-end 0))
-      (let ((capability (match-string 0 string)))
-	(if (string-prefix-p "AUTH=" capability)
-	    (push (substring capability 5) auth)
-	  (push capability capabilities))))
+
+(defun bic--parse-capabilities (strings)
+  (let (capabilities auth)
+    (dolist (capability strings)
+      (if (string-prefix-p "AUTH=" capability)
+	  (push (substring capability 5) auth)
+	(push capability capabilities)))
     (cons (cons :auth auth) capabilities)))
 
-(defun bic--parse-line (line)
-  (if (not (string-match "^\\([^ ]+\\) \\([^ ]+\\)\\(?: \\(.*\\)\\)?$" line))
-      :unexpected
-    (let ((tag (match-string 1 line))
-	  (type (match-string 2 line))
-	  (rest (or (match-string 3 line) "")))
-      (pcase tag
-	("*"
-;;; One of:
-;;;
-;;; response-data   = "*" SP (resp-cond-state / resp-cond-bye /
-;;;                   mailbox-data / message-data / capability-data) CRLF
-;;;
-;;; response-fatal  = "*" SP resp-cond-bye CRLF
-;;;                     ; Server closes connection immediately
-	 (pcase type
-;;; resp-cond-bye   = "BYE" SP resp-text
-;;;
-	   ("BYE"
-	    (list tag :bye rest))
-	   ((or "OK" "NO" "BAD")
-;;; resp-cond-state = ("OK" / "NO" / "BAD") SP resp-text
-;;;                     ; Status condition
-	    (cons tag (bic--parse-resp-text type rest)))
-;;; mailbox-data    =  "FLAGS" SP flag-list / "LIST" SP mailbox-list /
-;;;                    "LSUB" SP mailbox-list / "SEARCH" *(SP nz-number) /
-;;;                    "STATUS" SP mailbox SP "(" [status-att-list] ")" /
-;;;                    number SP "EXISTS" / number SP "RECENT"
-	   ((or "LIST" "LSUB")
-;;; mailbox-list    = "(" [mbx-list-flags] ")" SP
-;;;                    (DQUOTE QUOTED-CHAR DQUOTE / nil) SP mailbox
-	    (unless (string-match "(\\([^)]*\\)) \\(NIL\\|\".\"\\|\"\\\\\"\"\\|\"\\\\\\\\\"\\) \\(.*\\)" rest)
-	      (error "Malformed response: %S" line))
-	    (let ((mailbox-flags (match-string 1 rest))
-		  (separator (match-string 2 rest))
-		  (mailbox-name (match-string 3 rest)))
-	      (list tag type
-		    :flags (split-string mailbox-flags " ")
-		    :separator (cond
-				((string= (upcase separator) "NIL")
-				 nil)
-				(t
-				 (bic--parse-string separator)))
-		    :name (cond
-			   ((string= (upcase mailbox-name) "INBOX")
-			    "INBOX")
-			   (t
-			    (bic--parse-string mailbox-name))))))
-	   ("SEARCH"
-	    (list tag type :results (split-string rest)))
-	   (_
-	    (list tag type rest))))
-	(_
-	 ;; We have a tag.  `type' must be "OK", "NO" or "BAD".
-	 (pcase type
-	   ((or "OK" "NO" "BAD")
-	    (cons tag (bic--parse-resp-text type rest)))
-	   (t
-	    (error "Unexpected input: %S" line))))))))
+(cl-defun bic--parse-line (line
+			   &key (line-start t) ((:start-at i) 0) closing-parenthesis
+			   &aux tokens)
+  (when line-start
+    (cond
+     ((not (stringp (car line)))
+      ;; No empty lines, or lines starting with a literal
+      (cl-return-from bic--parse-line :unexpected))
+     ((string-prefix-p "+" (car line))
+      ;; Continuation line
+      (cl-return-from bic--parse-line
+	(cl-list* "+"
+		  (if (< (length (car line)) 2)
+		      ;; In principle, this should always be followed by a space.
+		      ;; In practice, Exchange sends just a plus sign on a line.
+		      ""
+		    (substring (car line) 2))
+		  (cdr line))))
+     ;; If the line starts with a tag and one of the words OK, NO, BAD,
+     ;; BYE or PREAUTH, then the rest of the line should be parsed as
+     ;; resp-text.
+     ;; XXX: tag is `any ASTRING-CHAR expect "+"'
+     ((string-match
+       "^\\([^ +]+\\) \\(OK\\|NO\\|BAD\\|BYE\\|PREAUTH\\) \\(.*\\)$"
+       (car line))
+      (cl-return-from bic--parse-line
+	(if (cdr line)
+	    ;; Can't have literal on lines with resp-text
+	    :unexpected
+	  (let ((tag (match-string 1 (car line)))
+		(type (match-string 2 (car line)))
+		(rest (match-string 3 (car line))))
+	    (cons tag (bic--parse-resp-text type rest))))))))
+
+  (while line
+    (cond
+     ((consp (car line))
+      (push (pop line) tokens))
+     ((or (null i) (>= i (length (car line))))
+      (pop line)
+      (setq i 0))
+     (t
+      (cl-case (aref (car line) i)
+	(?\"
+	 (cl-destructuring-bind (string new-i)
+	     (bic--parse-quoted-string (car line) i)
+	   (push string tokens)
+	   (setq i new-i)))
+	((?\) ?\])
+	 (if (not (eq (aref (car line) i) closing-parenthesis))
+	     (error "Unexpected closing parenthesis in %S" line)
+	   (cl-return-from bic--parse-line (list (nreverse tokens) line (1+ i)))))
+	((?\( ?\[)
+	 (let ((closing
+		(cl-ecase (aref (car line) i)
+		  (?\( ?\))
+		  (?\[ ?\]))))
+
+	   (cl-destructuring-bind (subtokens new-line new-i)
+	       (bic--parse-line
+		line :line-start nil :start-at (1+ i) :closing-parenthesis closing)
+	     (push subtokens tokens)
+	     (setq line new-line
+		   i new-i))))
+	(?\s
+	 ;; We're being liberal here, accepting superfluous spaces.
+	 (cl-incf i))
+	(t
+	 ;; TODO: can we get away with representing anything else as a
+	 ;; string?
+	 (let* ((new-i (cl-position-if
+			;; TODO: what about "("?
+			(lambda (c) (memq c '(?\s ?\) ?\[ ?\])))
+			(car line) :start i))
+		;; new-i may be nil
+		(token (substring (car line) i new-i)))
+	   (push token tokens)
+	   (setq i new-i)))))))
+
+  (if closing-parenthesis
+      (error "Expected closing `%c'" closing-parenthesis)
+    (nreverse tokens)))
 
 (defun bic--parse-resp-text (type resp-text)
 ;;; resp-text       = ["[" resp-text-code "]" SP] text
@@ -605,29 +691,37 @@ finished.  There is no immediate response."
 	      :text text))
     (list (intern (concat ":" (downcase type))) :text resp-text)))
 
-(defun bic--parse-string (quoted)
-  ;; TODO: accept literals as well as quoted strings
-;;; string          = quoted / literal
-;;;
+(defun bic--parse-quoted-string (line start)
+  "Parse a quoted string in LINE, starting at START.
+Return a list with two elements: the parsed string, and
+the position beyond the closing double quote."
 ;;; quoted          = DQUOTE *QUOTED-CHAR DQUOTE
 ;;;
 ;;; QUOTED-CHAR     = <any TEXT-CHAR except quoted-specials> /
 ;;;                   "\" quoted-specials
 ;;;
 ;;; quoted-specials = DQUOTE / "\"
-  (cond
-   ((and (eq (aref quoted 0) ?\")
-	 (eq (aref quoted (1- (length quoted))) ?\"))
-    (let ((string (substring quoted 1 (1- (length quoted))))
-	  (idx 0))
-      (while (and (< idx (length string))
-		  (setq idx (cl-position ?\\ string :start idx)))
-	;; We found a backslash.  It escapes the following character.
-	(setf (substring string idx (+ idx 2)) (string (aref string (1+ idx))))
-	(cl-incf idx))
-      string))
-   (t
-    (error "Not a quoted string: %s" quoted))))
+  ;; Move past opening double quote.
+  (cl-incf start)
+  (let ((i (1+ start))
+	string-parts)
+    (while (and (< i (length line))
+		(setq i
+		      (cl-position-if
+		       (lambda (c) (memq c '(?\" ?\\)))
+		       line :start i))
+		(not (eq (aref line i) ?\")))
+      ;; We found a backslash.  It escapes the following character.
+      (push (substring line start i) string-parts)
+      (cl-incf i)
+      (push (string (aref line i)) string-parts)
+      (cl-incf i)
+      (setf start i))
+    (unless i
+      (error "IMAP string not terminated"))
+    (push (substring line start i) string-parts)
+    (list (apply #'concat (nreverse string-parts))
+	  (1+ i))))
       
 (provide 'bic-core)
 ;;; bic-core.el ends here
