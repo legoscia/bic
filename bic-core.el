@@ -142,7 +142,7 @@ connection is closed."
 
 (define-enter-state bic-connection :wait-for-capabilities
   (fsm state-data)
-  (bic--send fsm "foo CAPABILITY\r\n")
+  (bic--send fsm "caps CAPABILITY\r\n")
   (list state-data nil))
 
 (define-state bic-connection :wait-for-capabilities
@@ -157,7 +157,7 @@ connection is closed."
 	(let ((capabilities (bic--parse-capabilities capability-strings)))
 	  (list :wait-for-capabilities
 		(plist-put state-data :capabilities capabilities))))
-       (`("foo" :ok . ,_)
+       (`("caps" :ok . ,_)
 	(bic--advance-connection-state
 	 fsm state-data
 	 (plist-get state-data :capabilities)))
@@ -176,7 +176,7 @@ connection is closed."
     (if (member "STARTTLS" capabilities)
 	(progn
 	  (send-string (plist-get state-data :proc)
-		       "foo STARTTLS\r\n")
+		       "starttls STARTTLS\r\n")
 	  (list :wait-for-starttls-response state-data))
       (bic--fail state-data
 		 :starttls-not-available
@@ -227,7 +227,7 @@ connection is closed."
      (list :wait-for-starttls-response state-data))
     (`(:line ,line)
      (pcase (bic--parse-line line)
-       (`("foo" :ok . ,_)
+       (`("starttls" :ok . ,_)
 	(condition-case e
 	    (progn
 	      (bic--negotiate-tls state-data)
@@ -244,7 +244,7 @@ connection is closed."
 		      (format "Cannot negotiate STARTTLS for %s: %s"
 			      (plist-get state-data :server)
 			      (error-message-string e))))))
-       (`("foo" :bad . ,plist)
+       (`("starttls" :bad . ,plist)
 	(bic--fail state-data
 		   :tls-failure
 		   (format "Cannot negotiate STARTTLS: %s"
