@@ -151,7 +151,6 @@
 	(message "Got successful SELECT response: %S" select-data)
 	(bic--handle-select-response state-data mailbox-name select-data)
 
-	;; XXX: remember what we selected
 	(bic-command (plist-get state-data :connection)
 		     ;; XXX: SEARCH or UID SEARCH?
 		     "UID SEARCH UNSEEN"
@@ -165,7 +164,8 @@
      ;; TODO: download the messages in question
      (pcase search-response
        (`(:ok ,_ ,search-data)
-	(let ((search-results (cdr (assoc "SEARCH" search-data))))
+	(let ((search-results (cdr (assoc "SEARCH" search-data)))
+	      (selected-mailbox (plist-get state-data :selected)))
 	  (when search-results
 	    ;; These should be UIDs, since they are a response to a UID
 	    ;; SEARCH command.
@@ -174,11 +174,42 @@
 				 (mapconcat #'identity search-results ",")
 				 ;; TODO: Is "BODY.PEEK[]" the right choice?
 				 " BODY.PEEK[]")
+			 ;; TODO: handle fetch responses one after another
 			 (lambda (fetch-response)
-			   (fsm-send fsm (list :fetch-response fetch-response)))))
+			   (fsm-send fsm (list :fetch-response
+					       selected-mailbox
+					       fetch-response)))))
 	  (list :connected state-data nil))
 	;; TODO: handle SEARCH error
 	)))
+    (`(:fetch-response ,selected-mailbox ,fetch-response)
+     (pcase fetch-response
+       (`(:ok ,_ ,fetched-messages)
+	(let ((dir (bic--mailbox-dir state-data selected-mailbox))
+	      (coding-system-for-write 'binary))
+	  (dolist (msg fetched-messages)
+	    (pcase msg
+	      (`(,uid "FETCH" ,msg-att)
+	       (pcase (member "BODY" msg-att)
+		 (`("BODY" nil (,start-marker . ,end-marker))
+		  ;; If we do more clever fetching at some point, we'd
+		  ;; have a non-nil section-spec.
+		  (with-current-buffer (marker-buffer start-marker)
+		    (write-region
+		     start-marker end-marker
+		      ;; TODO: prefix with uidvalidity value?
+		     (expand-file-name uid dir)
+		     nil 'silent)))
+		 (`("BODY" . ,other)
+		  (message "Unexpected BODY in FETCH response: %S" other))
+		 (other
+		  (message "Missing BODY in FETCH response: %S" other))))
+	      (other
+	       (message "Unexpected response to FETCH request: %S" other))))))
+       (other
+	(message "FETCH request failed: %S" other)))
+     ;; TODO: we have the data, do something with it.
+     (list :connected state-data))
     (`((:disconnected ,keyword ,reason) ,connection)
      (cond
       ((eq connection (plist-get state-data :connection))
