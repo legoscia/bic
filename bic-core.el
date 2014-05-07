@@ -175,8 +175,7 @@ connection is closed."
 	 (not (eq (plist-get state-data :connection-type) :unencrypted)))
     (if (member "STARTTLS" capabilities)
 	(progn
-	  (send-string (plist-get state-data :proc)
-		       "starttls STARTTLS\r\n")
+	  (bic--send fsm "starttls STARTTLS\r\n")
 	  (list :wait-for-starttls-response state-data))
       (bic--fail state-data
 		 :starttls-not-available
