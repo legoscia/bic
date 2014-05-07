@@ -164,8 +164,12 @@
      ;; TODO: download the messages in question
      (pcase search-response
        (`(:ok ,_ ,search-data)
-	(let ((search-results (cdr (assoc "SEARCH" search-data)))
-	      (selected-mailbox (plist-get state-data :selected)))
+	(let* ((search-results (cdr (assoc "SEARCH" search-data)))
+	       (selected-mailbox (plist-get state-data :selected))
+	       (uidvalidity
+		(plist-get (cdr (assoc selected-mailbox
+				       (plist-get state-data :mailboxes)))
+			   :uidvalidity)))
 	  (when search-results
 	    ;; These should be UIDs, since they are a response to a UID
 	    ;; SEARCH command.
@@ -178,11 +182,12 @@
 			 (lambda (fetch-response)
 			   (fsm-send fsm (list :fetch-response
 					       selected-mailbox
-					       fetch-response)))))
+					       fetch-response
+					       uidvalidity)))))
 	  (list :connected state-data nil))
 	;; TODO: handle SEARCH error
 	)))
-    (`(:fetch-response ,selected-mailbox ,fetch-response)
+    (`(:fetch-response ,selected-mailbox ,fetch-response ,uidvalidity)
      (pcase fetch-response
        (`(:ok ,_ ,fetched-messages)
 	(let ((dir (bic--mailbox-dir state-data selected-mailbox))
@@ -197,8 +202,7 @@
 		  (with-current-buffer (marker-buffer start-marker)
 		    (write-region
 		     start-marker end-marker
-		      ;; TODO: prefix with uidvalidity value?
-		     (expand-file-name uid dir)
+		     (expand-file-name (concat uidvalidity "-" uid) dir)
 		     nil 'silent)))
 		 (`("BODY" . ,other)
 		  (message "Unexpected BODY in FETCH response: %S" other))
