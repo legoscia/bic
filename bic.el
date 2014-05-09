@@ -2,7 +2,7 @@
 
 ;; Copyright (C) 2014  Magnus Henoch
 
-;; Author: Magnus Henoch <magnus@erlang-solutions.com>
+;; Author: Magnus Henoch <magnus.henoch@gmail.com>
 ;; Keywords: mail
 
 ;; This program is free software; you can redistribute it and/or modify
