@@ -127,8 +127,7 @@ connection is closed."
      (list :wait-for-greeting state-data))
     (`(:line ,line)
      (pcase (bic--parse-greeting line)
-       (`(:ok ,capabilities ,greeting-text)
-	(message "Server said '%s'" greeting-text)
+       (`(:ok ,capabilities ,_greeting-text)
 	(if (null capabilities)
 	    (list :wait-for-capabilities state-data)
 	  (bic--advance-connection-state fsm state-data capabilities)))
@@ -231,7 +230,6 @@ connection is closed."
 	    (progn
 	      (bic--negotiate-tls state-data)
 	      ;; No error?  Connection encrypted!
-	      (message "STARTTLS negotiated")
 	      ;; Forget capabilities and ask again on encrypted connection.
 	      (list :wait-for-capabilities
 		    (plist-put
@@ -270,7 +268,6 @@ connection is closed."
      (bic--filter process data fsm :sensitive (apply-partially #'string-prefix-p "+ "))
      (list :sasl-auth state-data))
     (`(:line ,line)
-     (message "Got: %S" (bic--parse-line line))
      (pcase (bic--parse-line line)
        (`("+" ,data)
 	(let ((client (plist-get state-data :sasl-client))
@@ -305,7 +302,6 @@ connection is closed."
 	       (when (string= (plist-get plist :code) "CAPABILITY")
 		 (bic--parse-capabilities (split-string (plist-get plist :data)))))
 	      (text (plist-get plist :text)))
-	  (message "IMAP authentication successful: %s" text)
 	  (plist-put state-data :authenticated t)
 	  (plist-put state-data :capabilities new-capabilities)
 	  (plist-put state-data :sasl-client nil)
