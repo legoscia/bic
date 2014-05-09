@@ -721,6 +721,6 @@ the position beyond the closing double quote."
     (push (substring line start i) string-parts)
     (list (apply #'concat (nreverse string-parts))
 	  (1+ i))))
-      
+
 (provide 'bic-core)
 ;;; bic-core.el ends here
