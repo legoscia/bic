@@ -28,6 +28,8 @@
 (require 'bic-core)
 (require 'cl-lib)
 (require 'utf7)
+(require 'ewoc)
+(require 'gnus-art)
 
 (defvar bic-active-accounts ())
 
@@ -309,6 +311,106 @@ It also includes underscore, which is used as an escape character.")
 	      (write-region (point-min) (point-max) uidvalidity-file))))
       (message "Missing UIDVALIDITY!  This is not good.")))
   (plist-put state-data :selected mailbox-name))
+
+;;; Mailbox view
+
+(defvar bic--current-account nil)
+(make-variable-buffer-local 'bic--current-account)
+
+(defvar bic--current-mailbox nil)
+(make-variable-buffer-local 'bic--current-mailbox)
+
+(defvar bic--dir nil)
+(make-variable-buffer-local 'bic--dir)
+
+(defvar bic-mailbox--ewoc nil)
+(make-variable-buffer-local 'bic-mailbox--ewoc)
+
+(defun bic-mailbox-open (account mailbox)
+  (interactive
+   (let* ((accounts (directory-files bic-data-directory nil "@"))
+	  (account (completing-read "IMAP account: " accounts))
+	  (mailboxes (directory-files (expand-file-name account bic-data-directory) nil "[^.]"))
+	  ;; XXX: unsanitize name
+	  (mailbox (completing-read "Mailbox: " mailboxes)))
+     (list account mailbox)))
+  (let ((buffer-name (concat mailbox "-" account)))
+    (with-current-buffer (get-buffer-create buffer-name)
+      (unless (derived-mode-p 'bic-mailbox-mode)
+	(bic-mailbox-mode)
+	(bic-mailbox--init account mailbox)))
+    (switch-to-buffer buffer-name)))
+
+(defvar bic-mailbox-mode-map
+  (let ((map (make-sparse-keymap)))
+    (set-keymap-parent map special-mode-map)
+    (define-key map (kbd "RET") 'bic-mailbox-read-message)
+    map))
+
+(define-derived-mode bic-mailbox-mode special-mode "BIC mailbox"
+  "Major mode for IMAP mailboxes accessed by `bic'."
+  (setq header-line-format
+	'(" " bic--current-account " " bic--mailbox--current-mailbox)))
+
+(defun bic-mailbox--init (account mailbox)
+  (setq bic--current-account account
+	bic--current-mailbox mailbox
+	bic--dir (expand-file-name
+		  mailbox
+		  (expand-file-name
+		   account bic-data-directory)))
+  (let ((inhibit-read-only t))
+    (erase-buffer)
+    (setq bic-mailbox--ewoc
+	  (ewoc-create #'bic-mailbox--pp))
+
+    (let* ((uidvalidity-file (expand-file-name "uidvalidity" bic--dir))
+	   (uidvalidity (with-temp-buffer
+			  (insert-file-contents-literally uidvalidity-file)
+			  (buffer-string)))
+	   (messages (directory-files bic--dir nil
+				      (concat "^" uidvalidity "-[0-9]+$"))))
+      (dolist (msg messages)
+	(ewoc-enter-last bic-mailbox--ewoc msg)))))
+
+(defun bic-mailbox--pp (msg)
+  ;; TODO: display sender, subject etc
+  (insert msg))
+
+(defun bic-mailbox-read-message ()
+  "Open the message under point."
+  (interactive)
+  (unless (derived-mode-p 'bic-mailbox-mode)
+    (user-error "Not a mailbox buffer"))
+  (let ((msg (ewoc-data (ewoc-locate bic-mailbox--ewoc (point)))))
+    (bic-message-display bic--current-account
+			 bic--current-mailbox
+			 msg)))
+
+;;; Message view
+
+(define-derived-mode bic-message-mode gnus-article-mode "BIC Message"
+  "Major mode for messages viewed from `bic'.")
+
+(defun bic-message-display (account mailbox msg)
+  (with-current-buffer (get-buffer-create "*BIC-Message*")
+    (let ((inhibit-read-only t))
+      (bic-message-mode)
+      (setq bic--current-account account
+	    bic--current-mailbox mailbox
+	    bic--dir (expand-file-name
+		      mailbox
+		      (expand-file-name
+		       account bic-data-directory)))
+      ;; XXX: ideally we should use insert-file-contents-literally
+      ;; here, but gnus-article-mode gets very confused by our CRLF
+      ;; line endings.
+      (insert-file-contents (expand-file-name msg bic--dir)
+			    nil nil nil t)
+      ;; Gnus already does a fine job displaying messages, so we might
+      ;; as well piggy-back on that:
+      (gnus-article-prepare-display))
+    (display-buffer (current-buffer))))
 
 (provide 'bic)
 ;;; bic.el ends here
