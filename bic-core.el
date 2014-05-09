@@ -413,7 +413,13 @@ connection is closed."
 	  (funcall command-callback (list type rest response-acc))))
        (_
 	(fsm-debug-output "Unexpected line: '%s'" line)))
-     (list :authenticated state-data))))
+     (list :authenticated state-data))
+
+    (`(:sentinel ,_process ,reason)
+     ;; strip trailing newline
+     (when (eq ?\n (aref reason (1- (length reason))))
+       (setq reason (substring reason 0 -1)))
+     (bic--fail state-data :connection-closed reason))))
 
 (defun bic-command (fsm command callback)
   "Send an IMAP command.
