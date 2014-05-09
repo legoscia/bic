@@ -51,6 +51,11 @@
 		(list :existing state-data)
 	      (list :no-data state-data)))))
 
+(define-enter-state bic-account nil
+  (fsm state-data)
+  (setq bic-active-accounts (delq fsm bic-active-accounts))
+  (list state-data nil))
+
 (define-enter-state bic-account :no-data
   (fsm state-data)
   ;; We know nothing about this account.  Let's try connecting.
