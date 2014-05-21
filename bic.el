@@ -415,7 +415,8 @@ It also includes underscore, which is used as an escape character.")
 
 (defun bic-message-display (account mailbox msg)
   (with-current-buffer (get-buffer-create "*BIC-Message*")
-    (let ((inhibit-read-only t))
+    (let ((inhibit-read-only t)
+	  (gnus-summary-buffer (current-buffer))) ;; Don't ask :(
       (bic-message-mode)
       (setq bic--current-account account
 	    bic--current-mailbox mailbox
@@ -431,7 +432,8 @@ It also includes underscore, which is used as an escape character.")
       ;; Gnus already does a fine job displaying messages, so we might
       ;; as well piggy-back on that:
       (gnus-article-prepare-display))
-    (display-buffer (current-buffer))))
+    (let ((window (display-buffer (current-buffer))))
+      (set-window-start window (point-min)))))
 
 (provide 'bic)
 ;;; bic.el ends here
