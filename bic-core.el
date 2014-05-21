@@ -373,7 +373,7 @@ connection is closed."
 (define-state bic-connection :authenticated
   (fsm state-data event callback)
   (pcase event
-    (`(:cmd ,cmd)
+    (`(:cmd ,cmd ,early-callbacks)
      (let* ((tag-number (or (plist-get state-data :next-tag) 0))
 	    (next-tag (1+ tag-number))
 	    (tag-string (number-to-string tag-number))
@@ -382,7 +382,7 @@ connection is closed."
 	     ;; shouldn't have that many pending commands, so
 	     ;; appending all the time should be fine.
 	     (append (plist-get state-data :pending-commands)
-		     (list (cons tag-string callback)))))
+		     (list (list tag-string early-callbacks callback)))))
        (plist-put state-data :pending-commands pending-commands)
        (plist-put state-data :next-tag next-tag)
        (bic--send fsm (concat tag-string " " cmd "\r\n"))
@@ -394,14 +394,23 @@ connection is closed."
 
     (`(:line ,line)
      (pcase (bic--parse-line line)
-       (`("*" ,type . ,rest)
-	;; TODO: maybe send results early
-	(plist-put state-data :response-acc
-		   (cons (cons type rest) (plist-get state-data :response-acc))))
+       (`("*" . ,rest)
+	(unless
+	    ;; maybe send results early
+	    (catch 'handled
+	      (dolist (early-callback
+		       (cl-second (car (plist-get state-data :pending-commands))))
+		(when (equal (nth (cl-first early-callback) rest)
+			     (cl-second early-callback))
+		  (funcall (cl-third early-callback) rest)
+		  (throw 'handled t))))
+	  ;; ...otherwise just store the line in the state.
+	  (plist-put state-data :response-acc
+		     (cons rest (plist-get state-data :response-acc)))))
        (`(,tag ,type . ,rest)
 	(let* ((pending-commands (plist-get state-data :pending-commands))
 	       (entry (assoc tag pending-commands))
-	       (command-callback (cdr entry))
+	       (command-callback (cl-third entry))
 	       (new-pending-commands (delq entry pending-commands))
 	       (response-acc (plist-get state-data :response-acc)))
 	  (plist-put state-data :response-acc nil)
@@ -417,9 +426,10 @@ connection is closed."
        (setq reason (substring reason 0 -1)))
      (bic--fail state-data :connection-closed reason))))
 
-(defun bic-command (fsm command callback)
+(defun bic-command (fsm command callback &optional early-callbacks)
   "Send an IMAP command.
 COMMAND is a string containing an IMAP command minus the tag.
+
 CALLBACK is a function that takes one argument of the form
 \(RESPONSE TEXT RESPONSE-LINES), where RESPONSE is a string
 containing the response type, typically \"OK\", \"NO\" or
@@ -428,8 +438,19 @@ RESPONSE-LINES is a list of (TYPE TEXT) entries, one for
 each untagged response line.
 
 The callback function will be called when the command has
-finished.  There is no immediate response."
-  (fsm-send fsm `(:cmd ,command) callback))
+finished.  There is no immediate response.
+
+EARLY-CALLBACKS is a list with elements of the form:
+
+  (N RESPONSE-NAME FUNCTION)
+
+where N is an integer and RESPONSE-NAME is a string.
+If the Nth word of a response line for this command is `equal'
+to RESPONSE-NAME, then FUNCTION is called with the response
+line as the only argument, and the response line in question is
+not included in the final response.  N starts at 0, and does not
+include the leading \"*\" tag."
+  (fsm-send fsm `(:cmd ,command ,early-callbacks) callback))
 
 (defun bic--fail (state-data keyword reason)
   (plist-put state-data :fail-keyword keyword)

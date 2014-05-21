@@ -187,35 +187,45 @@
 			   (fsm-send fsm (list :fetch-response
 					       selected-mailbox
 					       fetch-response
-					       uidvalidity)))))
+					       uidvalidity)))
+			 (list
+			  (list 1 "FETCH"
+				(lambda (one-fetch-response)
+				  (fsm-send fsm (list :early-fetch-response
+						      selected-mailbox
+						      one-fetch-response
+						      uidvalidity)))))))
 	  (list :connected state-data nil))
 	;; TODO: handle SEARCH error
 	)))
+    (`(:early-fetch-response ,selected-mailbox ,msg ,uidvalidity)
+     (let ((dir (bic--mailbox-dir state-data selected-mailbox))
+	   (coding-system-for-write 'binary))
+       (pcase msg
+	 (`(,_seq "FETCH" ,msg-att)
+	  (pcase (member "BODY" msg-att)
+	    ((and
+	      `("BODY" nil (,start-marker . ,end-marker) . ,_)
+	      (let `("UID" ,uid . ,_) (member "UID" msg-att)))
+	     ;; If we do more clever fetching at some point, we'd
+	     ;; have a non-nil section-spec.
+	     (with-current-buffer (marker-buffer start-marker)
+	       (write-region
+		start-marker end-marker
+		(expand-file-name (concat uidvalidity "-" uid) dir)
+		nil 'silent)))
+	    (`("BODY" . ,other)
+	     (message "Unexpected BODY in FETCH response: %S" other))
+	    (other
+	     (message "Missing BODY in FETCH response: %S" other))))
+	 (other
+	  (message "Unexpected response to FETCH request: %S" other))))
+     (list :connected state-data))
     (`(:fetch-response ,selected-mailbox ,fetch-response ,uidvalidity)
      (pcase fetch-response
        (`(:ok ,_ ,fetched-messages)
-	(let ((dir (bic--mailbox-dir state-data selected-mailbox))
-	      (coding-system-for-write 'binary))
-	  (dolist (msg fetched-messages)
-	    (pcase msg
-	      (`(,_seq "FETCH" ,msg-att)
-	       (pcase (member "BODY" msg-att)
-		 ((and
-		   `("BODY" nil (,start-marker . ,end-marker) . ,_)
-		   (let `("UID" ,uid . ,_) (member "UID" msg-att)))
-		  ;; If we do more clever fetching at some point, we'd
-		  ;; have a non-nil section-spec.
-		  (with-current-buffer (marker-buffer start-marker)
-		    (write-region
-		     start-marker end-marker
-		     (expand-file-name (concat uidvalidity "-" uid) dir)
-		     nil 'silent)))
-		 (`("BODY" . ,other)
-		  (message "Unexpected BODY in FETCH response: %S" other))
-		 (other
-		  (message "Missing BODY in FETCH response: %S" other))))
-	      (other
-	       (message "Unexpected response to FETCH request: %S" other))))))
+	(when fetched-messages
+	  (message "Extra response lines for FETCH: %S" fetched-messages)))
        (other
 	(message "FETCH request failed: %S" other)))
      ;; TODO: we have the data, do something with it.
