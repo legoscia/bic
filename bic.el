@@ -84,12 +84,9 @@
      (list nil state-data))
     (`(:authenticated ,_)
      ;; That's good enough for now; let's create the directory.
-     (let ((old-default-file-modes (default-file-modes)))
-       ;; Mail directories should not be group- or world-readable.
-       (set-default-file-modes #o700)
-       (unwind-protect
-	   (make-directory (plist-get state-data :dir) t)
-	 (set-default-file-modes old-default-file-modes)))
+     ;; Mail directories should not be group- or world-readable.
+     (with-file-modes #o700
+       (make-directory (plist-get state-data :dir) t))
      (list :connected state-data))))
 
 (define-enter-state bic-account :existing
