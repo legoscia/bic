@@ -175,26 +175,38 @@
 				       (plist-get state-data :mailboxes)))
 			   :uidvalidity)))
 	  (when search-results
-	    ;; These should be UIDs, since they are a response to a UID
-	    ;; SEARCH command.
-	    (bic-command (plist-get state-data :connection)
-			 (concat "UID FETCH "
-				 (mapconcat #'identity search-results ",")
-				 ;; TODO: Is "BODY.PEEK[]" the right choice?
-				 " BODY.PEEK[]")
-			 ;; TODO: handle fetch responses one after another
-			 (lambda (fetch-response)
-			   (fsm-send fsm (list :fetch-response
-					       selected-mailbox
-					       fetch-response
-					       uidvalidity)))
-			 (list
-			  (list 1 "FETCH"
-				(lambda (one-fetch-response)
-				  (fsm-send fsm (list :early-fetch-response
-						      selected-mailbox
-						      one-fetch-response
-						      uidvalidity)))))))
+	    (let* ((count (length search-results))
+		   (progress
+		    (make-progress-reporter
+		     (format "Fetching %d messages from %s..."
+			     count selected-mailbox)
+		     0 count))
+		   (n 0))
+	      ;; These should be UIDs, since they are a response to a UID
+	      ;; SEARCH command.
+	      ;; XXX: use plain search and plain fetch instead?
+	      (bic-command
+	       (plist-get state-data :connection)
+	       (concat "UID FETCH "
+		       (mapconcat #'identity search-results ",")
+		       ;; TODO: Is "BODY.PEEK[]" the right choice?
+		       " BODY.PEEK[]")
+	       ;; TODO: handle fetch responses one after another
+	       (lambda (fetch-response)
+		 (progress-reporter-done progress)
+		 (fsm-send fsm (list :fetch-response
+				     selected-mailbox
+				     fetch-response
+				     uidvalidity)))
+	       (list
+		(list 1 "FETCH"
+		      (lambda (one-fetch-response)
+			(cl-incf n)
+			(progress-reporter-update progress n)
+			(fsm-send fsm (list :early-fetch-response
+					    selected-mailbox
+					    one-fetch-response
+					    uidvalidity))))))))
 	  (list :connected state-data nil))
 	;; TODO: handle SEARCH error
 	)))
