@@ -198,9 +198,11 @@
 	      (coding-system-for-write 'binary))
 	  (dolist (msg fetched-messages)
 	    (pcase msg
-	      (`(,uid "FETCH" ,msg-att)
+	      (`(,_seq "FETCH" ,msg-att)
 	       (pcase (member "BODY" msg-att)
-		 (`("BODY" nil (,start-marker . ,end-marker))
+		 ((and
+		   `("BODY" nil (,start-marker . ,end-marker) . ,_)
+		   (let `("UID" ,uid . ,_) (member "UID" msg-att)))
 		  ;; If we do more clever fetching at some point, we'd
 		  ;; have a non-nil section-spec.
 		  (with-current-buffer (marker-buffer start-marker)
