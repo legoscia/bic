@@ -39,6 +39,19 @@
   (interactive "sIMAP username: \nsIMAP server: ")
   (push (start-bic-account username server) bic-active-accounts))
 
+(defun bic--find-account (account)
+  "Find active FSM for ACCOUNT.
+ACCOUNT is a string of the form \"username@server\"."
+  (or (string-match "\\(.*\\)@\\(.*\\)" account)
+      (error "Invalid account name `%s'" account))
+  (let ((username (match-string 1 account))
+	(server (match-string 2 account)))
+    (cl-find-if (lambda (state-data)
+		  (and (string= username (plist-get state-data :username))
+		       (string= server (plist-get state-data :server))))
+		bic-active-accounts
+		:key #'fsm-get-state-data)))
+
 (define-state-machine bic-account
   :start ((username server)
 	  "Start using an IMAP account."
@@ -48,7 +61,8 @@
 		 (state-data (list
 			      :username username
 			      :server server
-			      :dir dir)))
+			      :dir dir
+			      :flags-per-mailbox (make-hash-table :test 'equal))))
 	    (if (file-directory-p dir)
 		(list :existing state-data)
 	      (list :no-data state-data)))))
@@ -190,7 +204,7 @@
 	       (concat "UID FETCH "
 		       (mapconcat #'identity search-results ",")
 		       ;; TODO: Is "BODY.PEEK[]" the right choice?
-		       " BODY.PEEK[]")
+		       " (ENVELOPE INTERNALDATE FLAGS BODY.PEEK[])")
 	       ;; TODO: handle fetch responses one after another
 	       (lambda (fetch-response)
 		 (progress-reporter-done progress)
@@ -211,28 +225,49 @@
 	;; TODO: handle SEARCH error
 	)))
     (`(:early-fetch-response ,selected-mailbox ,msg ,uidvalidity)
-     (let ((dir (bic--mailbox-dir state-data selected-mailbox))
-	   (coding-system-for-write 'binary))
+     (message "got %S" msg)
+     (let* ((dir (bic--mailbox-dir state-data selected-mailbox))
+	    (overview-file (expand-file-name "overview" dir))
+	    (flags-table (gethash selected-mailbox
+				  (plist-get state-data :flags-per-mailbox)))
+	    (coding-system-for-write 'binary))
        (pcase msg
 	 (`(,_seq "FETCH" ,msg-att)
-	  (pcase (member "BODY" msg-att)
-	    ((and
-	      `("BODY" nil (,start-marker . ,end-marker) . ,_)
-	      (let `("UID" ,uid . ,_) (member "UID" msg-att)))
-	     ;; If we do more clever fetching at some point, we'd
-	     ;; have a non-nil section-spec.
-	     (with-current-buffer (marker-buffer start-marker)
-	       (write-region
-		start-marker end-marker
-		(expand-file-name (concat uidvalidity "-" uid) dir)
-		nil 'silent)))
-	    (`("BODY" . ,other)
-	     (message "Unexpected BODY in FETCH response: %S" other))
-	    (other
-	     (message "Missing BODY in FETCH response: %S" other))))
+	  ;; TODO: check for mailbox view
+	  (let* ((uid-entry (member "UID" msg-att))
+		 (uid (cadr uid-entry))
+		 (body-entry (member "BODY" msg-att))
+		 (envelope-entry (member "ENVELOPE" msg-att))
+		 (flags-entry (member "FLAGS" msg-att)))
+	    (pcase body-entry
+	      ((guard (null uid))
+	       (warn "Missing UID in FETCH response: %S" msg))
+	      (`("BODY" nil (,start-marker . ,end-marker) . ,_)
+	       ;; If we do more clever fetching at some point, we'd
+	       ;; have a non-nil section-spec.
+	       (with-current-buffer (marker-buffer start-marker)
+		 (write-region
+		  start-marker end-marker
+		  (expand-file-name (concat uidvalidity "-" uid) dir)
+		  nil :silent))
+	       ;; TODO: avoid duplicates
+	       (with-temp-buffer
+		 (insert uidvalidity "-" uid " ")
+		 ;; TODO: better format?
+		 (prin1 (cadr envelope-entry) (current-buffer))
+		 (insert "\n")
+		 (write-region (point-min) (point-max)
+			       overview-file :append :silent))
+	       (puthash (concat uidvalidity "-" uid)
+			(cadr flags-entry)
+			flags-table))
+	      (`("BODY" . ,other)
+	       (message "Unexpected BODY in FETCH response: %S" other))
+	      (other
+	       (message "Missing BODY in FETCH response: %S" other)))))
 	 (other
-	  (message "Unexpected response to FETCH request: %S" other))))
-     (list :connected state-data))
+	  (message "Unexpected response to FETCH request: %S" other)))
+       (list :connected state-data)))
     (`(:fetch-response ,selected-mailbox ,fetch-response ,uidvalidity)
      (pcase fetch-response
        (`(:ok ,_ ,fetched-messages)
@@ -241,6 +276,9 @@
        (other
 	(message "FETCH request failed: %S" other)))
      ;; TODO: we have the data, do something with it.
+     (list :connected state-data))
+    (`(:get-flags-table ,mailbox)
+     (funcall callback (bic--read-flags-table state-data mailbox))
      (list :connected state-data))
     (`((:disconnected ,keyword ,reason) ,connection)
      (cond
@@ -329,9 +367,34 @@ It also includes underscore, which is used as an escape character.")
 	    (message "Fresh UIDVALIDITY value: %S" uidvalidity-entry)
 	    (with-temp-buffer
 	      (insert uidvalidity)
-	      (write-region (point-min) (point-max) uidvalidity-file))))
+	      (write-region (point-min) (point-max) uidvalidity-file)))
+
+	  (bic--read-flags-table state-data mailbox-name))
       (warn "Missing UIDVALIDITY!  This is not good.")))
+
   (plist-put state-data :selected mailbox-name))
+
+(defun bic--read-flags-table (state-data mailbox-name)
+  (let ((flags-table (gethash mailbox-name (plist-get state-data :flags-per-mailbox)))
+	(flags-file (expand-file-name "flags" (bic--mailbox-dir state-data mailbox-name))))
+    (when (null flags-table)
+      (setq flags-table (make-hash-table :test 'equal))
+      (puthash mailbox-name flags-table (plist-get state-data :flags-per-mailbox))
+
+      ;; TODO: are there situations where we need to reread the flags file?
+      (when (file-exists-p flags-file)
+	(with-temp-buffer
+	  (insert-file-contents-literally flags-file)
+	  (goto-char (point-min))
+	  (while (search-forward-regexp
+		  (concat "^\\([0-9]+-[0-9]+\\) \\(.*\\)$")
+		  nil t)
+	    (let ((full-uid (match-string 1))
+		  (rest (match-string 2)))
+	      (pcase-let
+		  ((`(,flags . ,_) (read-from-string rest)))
+		(puthash full-uid flags flags-table)))))))
+    flags-table))
 
 ;;; Mailbox view
 
@@ -346,6 +409,12 @@ It also includes underscore, which is used as an escape character.")
 
 (defvar bic-mailbox--ewoc nil)
 (make-variable-buffer-local 'bic-mailbox--ewoc)
+
+(defvar bic-mailbox--hashtable nil)
+(make-variable-buffer-local 'bic-mailbox--hashtable)
+
+(defvar bic-mailbox--flags-table nil)
+(make-variable-buffer-local 'bic-mailbox--flags-table)
 
 (defun bic-mailbox-open (account mailbox)
   (interactive
@@ -380,7 +449,8 @@ It also includes underscore, which is used as an escape character.")
 		  mailbox
 		  (expand-file-name
 		   account bic-data-directory)))
-  (let ((inhibit-read-only t))
+  (let ((inhibit-read-only t)
+	(buffer (current-buffer)))
     (erase-buffer)
     (setq bic-mailbox--ewoc
 	  (ewoc-create #'bic-mailbox--pp))
@@ -391,12 +461,41 @@ It also includes underscore, which is used as an escape character.")
 			  (buffer-string)))
 	   (messages (directory-files bic--dir nil
 				      (concat "^" uidvalidity "-[0-9]+$"))))
-      (dolist (msg messages)
-	(ewoc-enter-last bic-mailbox--ewoc msg)))))
+      (setq bic-mailbox--hashtable (bic--read-overview uidvalidity bic--dir))
+      (fsm-send (bic--find-account account) (list :get-flags-table mailbox)
+		(lambda (flags-table)
+		  (with-current-buffer buffer
+		    (setq bic-mailbox--flags-table flags-table)
+		    (let ((inhibit-read-only t))
+		      (dolist (msg messages)
+			(ewoc-enter-last bic-mailbox--ewoc msg)))))))))
+
+(defun bic--read-overview (uidvalidity dir)
+  (let ((overview-file (expand-file-name "overview" dir))
+	(hashtable (make-hash-table :test 'equal)))
+    (with-temp-buffer
+      (insert-file-contents-literally overview-file)
+      (goto-char (point-min))
+      (while (search-forward-regexp
+	      (concat "^\\(" uidvalidity "-[0-9]+\\) \\(.*\\)$")
+	      nil t)
+	(let ((full-uid (match-string 1))
+	      (rest (match-string 2)))
+	  (pcase-let
+	      ((`(,envelope . ,_) (read-from-string rest)))
+	    (puthash full-uid envelope hashtable)))))
+    hashtable))
 
 (defun bic-mailbox--pp (msg)
-  ;; TODO: display sender, subject etc
-  (insert msg))
+  (let ((envelope (gethash msg bic-mailbox--hashtable))
+	(flags (gethash msg bic-mailbox--flags-table)))
+    (pcase-let ((`(,date ,subject (,from . ,_) . ,_) envelope))
+      ;; TODO: nicer format
+      (insert (format "%s" flags) "\t" date "\t["
+	      (if (not (string= (car from) "NIL"))
+		  (car from)
+		(concat (nth 2 from) "@" (nth 3 from)))
+	      "]\t" subject))))
 
 (defun bic-mailbox-read-message ()
   "Open the message under point."
