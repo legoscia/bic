@@ -35,6 +35,9 @@
 
 (defvar bic-data-directory (locate-user-emacs-file "bic"))
 
+(defvar bic-backlog-days 30
+  "Messages no more than this old will be fetched.")
+
 (defun bic (username server)
   (interactive "sIMAP username: \nsIMAP server: ")
   (push (start-bic-account username server) bic-active-accounts))
@@ -171,7 +174,10 @@ ACCOUNT is a string of the form \"username@server\"."
 
 	(bic-command (plist-get state-data :connection)
 		     ;; XXX: SEARCH or UID SEARCH?
-		     "UID SEARCH UNSEEN"
+		     (concat "UID SEARCH OR UNSEEN SINCE "
+			     (bic--date-text
+			      (time-subtract (current-time)
+					     (days-to-time bic-backlog-days))))
 		     (lambda (search-response)
 		       (fsm-send fsm (list :search-response search-response))))
 	(list :connected state-data nil))
@@ -395,6 +401,16 @@ It also includes underscore, which is used as an escape character.")
 		  ((`(,flags . ,_) (read-from-string rest)))
 		(puthash full-uid flags flags-table)))))))
     flags-table))
+
+(defun bic--date-text (time)
+  (pcase-let ((`(,_sec ,_min ,_hour ,day ,month ,year . ,_)
+	       (decode-time time)))
+    (format "%02d-%s-%04d"
+	    day
+	    (aref ["Jan" "Feb" "Mar" "Apr" "May" "Jun"
+		   "Jul" "Aug" "Sep" "Oct" "Nov" "Dec"]
+		  (1- month))
+	    year)))
 
 ;;; Mailbox view
 
