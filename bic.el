@@ -324,13 +324,13 @@ It also includes underscore, which is used as an escape character.")
 		(if (string= (buffer-string) uidvalidity)
 		    (message "UIDVALIDITY match")
 		  ;; TODO
-		  (message "UIDVALIDITY mismatch: %s vs %s"
-			   (buffer-string) uidvalidity)))
+		  (warn "UIDVALIDITY mismatch: %s vs %s"
+			(buffer-string) uidvalidity)))
 	    (message "Fresh UIDVALIDITY value: %S" uidvalidity-entry)
 	    (with-temp-buffer
 	      (insert uidvalidity)
 	      (write-region (point-min) (point-max) uidvalidity-file))))
-      (message "Missing UIDVALIDITY!  This is not good.")))
+      (warn "Missing UIDVALIDITY!  This is not good.")))
   (plist-put state-data :selected mailbox-name))
 
 ;;; Mailbox view
