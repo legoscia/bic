@@ -745,5 +745,32 @@ the position beyond the closing double quote."
     (list (apply #'concat (nreverse string-parts))
 	  (1+ i))))
 
+(defun bic--expand-literals (sexp)
+  "Replace marker pairs with strings in output from `bic--parse-line'.
+Markers are set to point nowhere afterwards.  Modifies SEXP
+destructively, and returns it."
+  (pcase sexp
+    (`(,(and start-marker (pred markerp))
+       . ,(and end-marker (pred markerp)))
+     (unless (and (marker-position start-marker)
+		  (marker-position end-marker))
+       (error "Marker already cleared"))
+     (with-current-buffer (marker-buffer start-marker)
+       (prog1
+	   (buffer-substring start-marker end-marker)
+	 (set-marker start-marker nil)
+	 (set-marker end-marker nil))))
+    ((pred consp)
+     (setf (car sexp) (bic--expand-literals (car sexp)))
+     (setf (cdr sexp) (bic--expand-literals (cdr sexp)))
+     sexp)
+    ((pred markerp)
+     ;; This should have been caught in the first case.
+     (error "Unexpected marker"))
+    ((pred atom)
+     sexp)
+    (_
+     (error "Cannot expand literals in %S" sexp))))
+
 (provide 'bic-core)
 ;;; bic-core.el ends here

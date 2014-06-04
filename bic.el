@@ -259,7 +259,8 @@ ACCOUNT is a string of the form \"username@server\"."
 	       (with-temp-buffer
 		 (insert uidvalidity "-" uid " ")
 		 ;; TODO: better format?
-		 (prin1 (cadr envelope-entry) (current-buffer))
+		 (prin1 (bic--expand-literals (cadr envelope-entry))
+			(current-buffer))
 		 (insert "\n")
 		 (write-region (point-min) (point-max)
 			       overview-file :append :silent))
