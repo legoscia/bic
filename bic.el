@@ -231,7 +231,6 @@ ACCOUNT is a string of the form \"username@server\"."
 	;; TODO: handle SEARCH error
 	)))
     (`(:early-fetch-response ,selected-mailbox ,msg ,uidvalidity)
-     (message "got %S" msg)
      (let* ((dir (bic--mailbox-dir state-data selected-mailbox))
 	    (overview-file (expand-file-name "overview" dir))
 	    (flags-table (gethash selected-mailbox
