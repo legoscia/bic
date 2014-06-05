@@ -511,9 +511,9 @@ It also includes underscore, which is used as an escape character.")
       ;; TODO: nicer format
       (insert (format "%s" flags) "\t" date "\t["
 	      (if (not (string= (car from) "NIL"))
-		  (car from)
+		  (rfc2047-decode-string (car from))
 		(concat (nth 2 from) "@" (nth 3 from)))
-	      "]\t" subject))))
+	      "]\t" (rfc2047-decode-string subject)))))
 
 (defun bic-mailbox-read-message ()
   "Open the message under point."
