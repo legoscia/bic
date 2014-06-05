@@ -79,9 +79,10 @@ connection is closed."
   (fsm state-data)
   (let* ((server (plist-get state-data :server))
 	 (connection-type (plist-get state-data :connection-type))
+	 (buffer (generate-new-buffer (concat "bic-" server)))
 	 (proc (make-network-process
 		:name (concat "bic-" server)
-		:buffer (generate-new-buffer (concat "bic-" server))
+		:buffer buffer
 		:host server
 		:service (or (plist-get state-data :port)
 			     (cl-ecase connection-type
@@ -91,6 +92,7 @@ connection is closed."
 		:nowait t
 		:filter (fsm-make-filter fsm)
 		:sentinel (fsm-make-sentinel fsm))))
+    (buffer-disable-undo buffer)
     (list (plist-put state-data :proc proc) nil)))
 
 (define-state bic-connection :connecting
