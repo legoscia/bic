@@ -255,6 +255,8 @@ ACCOUNT is a string of the form \"username@server\"."
 		  start-marker end-marker
 		  (expand-file-name (concat uidvalidity "-" uid) dir)
 		  nil :silent))
+	       (set-marker start-marker nil)
+	       (set-marker end-marker nil)
 	       ;; TODO: avoid duplicates
 	       (with-temp-buffer
 		 (insert uidvalidity "-" uid " ")

@@ -39,6 +39,17 @@
 (defvar bic-send-cleartext-password nil
   "If non-nil, allow sending passwords on unencrypted connections.")
 
+(defvar-local bic--issued-markers nil
+  "Hash table of markers issued from current buffer.
+Ideally, this should be a weak ordered list, but since Emacs Lisp
+doesn't have that, we use a weak hash table instead.")
+
+(defvar-local bic--next-issued-marker 0
+  "The key for the next marker to be issued.")
+
+(defvar-local bic--next-collected-marker 0
+  "Start looking at this key for markers to collect.")
+
 (define-state-machine bic-connection
   :start ((username server connection-type &optional port callback)
 	  "Start an IMAP connection.
@@ -564,10 +575,60 @@ Keep calling this function until it returns nil."
     ;; keep parsing.
     (bic--transcript fsm (format "S: <%d bytes omitted>\n" bic--literal-expected-length))
     (let ((literal-end (+ bic--literal-start-marker bic--literal-expected-length)))
-      (push (cons bic--literal-start-marker (copy-marker literal-end)) bic--line-acc)
+      (push (cons (bic--issue-marker bic--literal-start-marker)
+		  (bic--issue-marker literal-end))
+	    bic--line-acc)
       (setq bic--literal-start-marker nil)
       (set-marker bic--unread-start-marker literal-end)
+      ;; TODO: is this too often?
+      (bic--prune-old-literals)
       t))))
+
+(defun bic--issue-marker (value)
+  "Create a marker pointing at VALUE, and record it.
+VALUE must be greater than any marker previously issued."
+  (unless bic--issued-markers
+    (setq bic--issued-markers (make-hash-table :weakness 'value)))
+  (let ((marker (copy-marker value)))
+    (prog1
+	marker
+      (puthash bic--next-issued-marker marker bic--issued-markers)
+      (cl-incf bic--next-issued-marker))))
+
+(defun bic--prune-old-literals ()
+  "Remove data before the first marker we know about."
+  ;; We send chunks of data to the client in the form of marker pairs,
+  ;; but we'd like to know when the client is done with the data, so
+  ;; that we can delete the data from the connection buffer and
+  ;; prevent it from growing indefinitely.  We accomplish this by
+  ;; keeping the markers in a weak hash table, such that the entries
+  ;; are removed when the markers are garbage collected.
+  ;; Alternatively, the client can explicitly make the markers point
+  ;; nowhere, which we explicitly check for.
+  ;;
+  ;; Since a hash table is not an ordered list, we keep two "indexes":
+  ;; one for the next key to use when inserting, and one for the next
+  ;; pruning candidate.
+  (while (and
+	  ;; In principle, we should check for integer
+	  ;; overflow/wraparound, but even on a 32-bit Emacs this
+	  ;; should let you download 134 million messages on a single
+	  ;; connection before you run into trouble...
+	  (< bic--next-collected-marker bic--next-issued-marker)
+	  (let ((maybe-marker (gethash bic--next-collected-marker bic--issued-markers)))
+	    ;; If the marker has been garbage collected, it won't be
+	    ;; in our weak hash table anymore:
+	    (or (null maybe-marker)
+		;; If it has been explicitly cleared, remove it from
+		;; the table.
+		(when (null (marker-position maybe-marker))
+		  (remhash bic--next-collected-marker bic--issued-markers)
+		  t))))
+    (cl-incf bic--next-collected-marker))
+  (let ((delete-until
+	 (or (gethash bic--next-collected-marker bic--issued-markers)
+	     bic--unread-start-marker)))
+    (delete-region (point-min) delete-until)))
 
 (cl-defun bic--send (fsm string &key sensitive)
   (bic--transcript fsm
