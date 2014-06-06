@@ -644,9 +644,13 @@ VALUE must be greater than any marker previously issued."
 
 (defun bic--transcript (fsm string)
   (with-current-buffer (get-buffer-create (format bic-transcript-buffer (plist-get (fsm-get-state-data fsm) :name)))
+    (unless (derived-mode-p 'view-mode)
+      (view-mode)
+      (setq-local view-no-disable-on-exit t))
     (save-excursion
       (goto-char (point-max))
-      (insert string))))
+      (let ((inhibit-read-only t))
+	(insert string)))))
 
 (defun bic--parse-greeting (line)
   (pcase (bic--parse-line line)
