@@ -496,17 +496,13 @@ include the leading \"*\" tag."
 		    :verify-hostname-error (not bic-ignore-tls-errors)
 		    :verify-error (not bic-ignore-tls-errors)))
 
-(defvar bic--unread-start-marker nil)
-(make-variable-buffer-local 'bic--unread-start-marker)
+(defvar-local bic--unread-start-marker nil)
 
-(defvar bic--literal-start-marker nil)
-(make-variable-buffer-local 'bic--literal-start-marker)
+(defvar-local bic--literal-start-marker nil)
 
-(defvar bic--literal-expected-length nil)
-(make-variable-buffer-local 'bic--literal-expected-length)
+(defvar-local bic--literal-expected-length nil)
 
-(defvar bic--line-acc nil)
-(make-variable-buffer-local 'bic--line-acc)
+(defvar-local bic--line-acc nil)
 
 (cl-defun bic--filter (process data fsm &key sensitive)
   (with-current-buffer (process-buffer process)

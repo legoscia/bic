@@ -416,23 +416,17 @@ It also includes underscore, which is used as an escape character.")
 
 ;;; Mailbox view
 
-(defvar bic--current-account nil)
-(make-variable-buffer-local 'bic--current-account)
+(defvar-local bic--current-account nil)
 
-(defvar bic--current-mailbox nil)
-(make-variable-buffer-local 'bic--current-mailbox)
+(defvar-local bic--current-mailbox nil)
 
-(defvar bic--dir nil)
-(make-variable-buffer-local 'bic--dir)
+(defvar-local bic--dir nil)
 
-(defvar bic-mailbox--ewoc nil)
-(make-variable-buffer-local 'bic-mailbox--ewoc)
+(defvar-local bic-mailbox--ewoc nil)
 
-(defvar bic-mailbox--hashtable nil)
-(make-variable-buffer-local 'bic-mailbox--hashtable)
+(defvar-local bic-mailbox--hashtable nil)
 
-(defvar bic-mailbox--flags-table nil)
-(make-variable-buffer-local 'bic-mailbox--flags-table)
+(defvar-local bic-mailbox--flags-table nil)
 
 (defun bic-mailbox-open (account mailbox)
   (interactive
