@@ -454,7 +454,7 @@ It also includes underscore, which is used as an escape character.")
 (define-derived-mode bic-mailbox-mode special-mode "BIC mailbox"
   "Major mode for IMAP mailboxes accessed by `bic'."
   (setq header-line-format
-	'(" " bic--current-account " " bic--mailbox--current-mailbox)))
+	'(" " bic--current-account " " bic--current-mailbox)))
 
 (defun bic-mailbox--init (account mailbox)
   (setq bic--current-account account
