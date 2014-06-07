@@ -638,6 +638,9 @@ VALUE must be greater than any marker previously issued."
 			       string)) "\n"))
   (send-string (plist-get (fsm-get-state-data fsm) :proc) string))
 
+;; Defined in view.el
+(defvar view-no-disable-on-exit)
+
 (defun bic--transcript (fsm string)
   (with-current-buffer (get-buffer-create (format bic-transcript-buffer (plist-get (fsm-get-state-data fsm) :name)))
     (unless (derived-mode-p 'view-mode)
