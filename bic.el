@@ -193,9 +193,17 @@ ACCOUNT is a string of the form \"username@server\"."
 	       (uidvalidity
 		(plist-get (cdr (assoc selected-mailbox
 				       (plist-get state-data :mailboxes)))
-			   :uidvalidity)))
-	  (when search-results
-	    (let* ((count (length search-results))
+			   :uidvalidity))
+	       (mailbox-dir (bic--mailbox-dir state-data selected-mailbox))
+	       (overview-table (bic--read-overview uidvalidity mailbox-dir))
+	       ;; Don't fetch messages we've already downloaded.
+	       ;; TODO: detect and react to flag changes
+	       (filtered-search-results
+		(cl-remove-if
+		 (lambda (uid) (gethash (concat uidvalidity "-" uid) overview-table))
+		 search-results)))
+	  (when filtered-search-results
+	    (let* ((count (length filtered-search-results))
 		   (progress
 		    (make-progress-reporter
 		     (format "Fetching %d messages from %s..."
@@ -208,7 +216,7 @@ ACCOUNT is a string of the form \"username@server\"."
 	      (bic-command
 	       (plist-get state-data :connection)
 	       (concat "UID FETCH "
-		       (mapconcat #'identity search-results ",")
+		       (mapconcat #'identity filtered-search-results ",")
 		       ;; TODO: Is "BODY.PEEK[]" the right choice?
 		       " (ENVELOPE INTERNALDATE FLAGS BODY.PEEK[])")
 	       (lambda (fetch-response)
