@@ -486,17 +486,18 @@ It also includes underscore, which is used as an escape character.")
 (defun bic--read-overview (uidvalidity dir)
   (let ((overview-file (expand-file-name "overview" dir))
 	(hashtable (make-hash-table :test 'equal)))
-    (with-temp-buffer
-      (insert-file-contents-literally overview-file)
-      (goto-char (point-min))
-      (while (search-forward-regexp
-	      (concat "^\\(" uidvalidity "-[0-9]+\\) \\(.*\\)$")
-	      nil t)
-	(let ((full-uid (match-string 1))
-	      (rest (match-string 2)))
-	  (pcase-let
-	      ((`(,envelope . ,_) (read-from-string rest)))
-	    (puthash full-uid envelope hashtable)))))
+    (when (file-exists-p overview-file)
+      (with-temp-buffer
+	(insert-file-contents-literally overview-file)
+	(goto-char (point-min))
+	(while (search-forward-regexp
+		(concat "^\\(" uidvalidity "-[0-9]+\\) \\(.*\\)$")
+		nil t)
+	  (let ((full-uid (match-string 1))
+		(rest (match-string 2)))
+	    (pcase-let
+		((`(,envelope . ,_) (read-from-string rest)))
+	      (puthash full-uid envelope hashtable))))))
     hashtable))
 
 (defun bic-mailbox--pp (msg)
