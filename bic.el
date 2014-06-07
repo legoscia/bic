@@ -211,7 +211,6 @@ ACCOUNT is a string of the form \"username@server\"."
 		       (mapconcat #'identity search-results ",")
 		       ;; TODO: Is "BODY.PEEK[]" the right choice?
 		       " (ENVELOPE INTERNALDATE FLAGS BODY.PEEK[])")
-	       ;; TODO: handle fetch responses one after another
 	       (lambda (fetch-response)
 		 (progress-reporter-done progress)
 		 (fsm-send fsm (list :fetch-response
