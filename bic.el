@@ -513,11 +513,32 @@ It also includes underscore, which is used as an escape character.")
 	(flags (gethash msg bic-mailbox--flags-table)))
     (pcase-let ((`(,date ,subject (,from . ,_) . ,_) envelope))
       ;; TODO: nicer format
-      (insert (format "%s" flags) "\t" date "\t["
+      (insert (bic-mailbox--format-flags flags) " "
+	      date "\t["
 	      (if (not (string= (car from) "NIL"))
 		  (rfc2047-decode-string (car from))
 		(concat (nth 2 from) "@" (nth 3 from)))
 	      "]\t" (rfc2047-decode-string subject)))))
+
+(defun bic-mailbox--format-flags (flags)
+  (propertize
+   (format "%c%c"
+	   (cond
+	    ((member "\\Flagged" flags)
+	     ?!)
+	    ((member "\\Seen" flags)
+	     ?R)
+	    (t
+	     ?\s))
+	   (cond
+	    ((member "\\Answered" flags)
+	     ?A)
+	    (t
+	     ?\s)))
+   'help-echo (concat "Flags: "
+		      (if flags
+			  (mapconcat 'identity flags ", ")
+			"none"))))
 
 (defun bic-mailbox-read-message ()
   "Open the message under point."
