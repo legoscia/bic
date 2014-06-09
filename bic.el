@@ -514,7 +514,7 @@ It also includes underscore, which is used as an escape character.")
     (pcase-let ((`(,date ,subject (,from . ,_) . ,_) envelope))
       ;; TODO: nicer format
       (insert (bic-mailbox--format-flags flags) " "
-	      date "\t["
+	      (bic-mailbox--format-date date) "\t["
 	      (if (not (string= (car from) "NIL"))
 		  (rfc2047-decode-string (car from))
 		(concat (nth 2 from) "@" (nth 3 from)))
@@ -539,6 +539,23 @@ It also includes underscore, which is used as an escape character.")
 		      (if flags
 			  (mapconcat 'identity flags ", ")
 			"none"))))
+
+(defun bic-mailbox--format-date (date)
+  (let ((parsed-date (ignore-errors (date-to-time date))))
+    (if (null date)
+	;; cannot parse
+	"**********"
+      (let ((days (- (time-to-days parsed-date) (time-to-days (current-time)))))
+	(cond
+	 ((= days 0)
+	  ;; same day: show time
+	  (format-time-string "     %H:%M" parsed-date))
+	 ((< days 365)
+	  ;; less than a year ago: show date without year
+	  (format "%10s" (format-time-string "%e %b" parsed-date)))
+	 (t
+	  ;; more than a year ago, or in the future: show YYYY-MM-DD
+	  (format-time-string "%F" parsed-date)))))))
 
 (defun bic-mailbox-read-message ()
   "Open the message under point."
