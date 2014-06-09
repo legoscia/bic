@@ -31,6 +31,10 @@
 (require 'ewoc)
 (require 'gnus-art)
 
+(defgroup bic nil
+  "Settings for the Best IMAP Client."
+  :group 'mail)
+
 (defvar bic-active-accounts ())
 
 (defvar bic-data-directory (locate-user-emacs-file "bic"))
@@ -425,6 +429,21 @@ It also includes underscore, which is used as an escape character.")
 
 ;;; Mailbox view
 
+(defface bic-mailbox-unread
+  '((t (:inherit gnus-summary-normal-unread)))
+  "Face used for unread messages."
+  :group 'bic)
+
+(defface bic-mailbox-read
+  '((t (:inherit gnus-summary-normal-read)))
+  "Face used for read messages."
+  :group 'bic)
+
+(defface bic-mailbox-flagged
+  '((t (:inherit gnus-summary-normal-ticked)))
+  "Face used for flagged messages."
+  :group 'bic)
+
 (defvar-local bic--current-account nil)
 
 (defvar-local bic--current-mailbox nil)
@@ -513,12 +532,25 @@ It also includes underscore, which is used as an escape character.")
 	(flags (gethash msg bic-mailbox--flags-table)))
     (pcase-let ((`(,date ,subject (,from . ,_) . ,_) envelope))
       ;; TODO: nicer format
-      (insert (bic-mailbox--format-flags flags) " "
-	      (bic-mailbox--format-date date) "\t["
-	      (if (not (string= (car from) "NIL"))
-		  (rfc2047-decode-string (car from))
-		(concat (nth 2 from) "@" (nth 3 from)))
-	      "]\t" (rfc2047-decode-string subject)))))
+      (insert
+       (propertize
+	(concat
+	 (bic-mailbox--format-flags flags) " "
+	 (bic-mailbox--format-date date) "\t["
+	 (if (not (string= (car from) "NIL"))
+	     (rfc2047-decode-string (car from))
+	   (concat (nth 2 from) "@" (nth 3 from)))
+	 "]\t" (rfc2047-decode-string subject))
+	'face (bic-mailbox--face-from-flags flags))))))
+
+(defun bic-mailbox--face-from-flags (flags)
+  (cond
+   ((member "\\Flagged" flags)
+    'bic-mailbox-flagged)
+   ((member "\\Seen" flags)
+    'bic-mailbox-read)
+   (t
+    'bic-mailbox-unread)))
 
 (defun bic-mailbox--format-flags (flags)
   (propertize
