@@ -536,11 +536,12 @@ It also includes underscore, which is used as an escape character.")
        (propertize
 	(concat
 	 (bic-mailbox--format-flags flags) " "
-	 (bic-mailbox--format-date date) "\t["
-	 (if (not (string= (car from) "NIL"))
-	     (rfc2047-decode-string (car from))
-	   (concat (nth 2 from) "@" (nth 3 from)))
-	 "]\t" (rfc2047-decode-string subject))
+	 (bic-mailbox--format-date date) "\t[ "
+	 (format "%-20.20s"
+		 (if (not (string= (car from) "NIL"))
+		     (rfc2047-decode-string (car from))
+		   (concat (nth 2 from) "@" (nth 3 from))))
+	 " ] " (rfc2047-decode-string subject))
 	'face (bic-mailbox--face-from-flags flags))))))
 
 (defun bic-mailbox--face-from-flags (flags)
