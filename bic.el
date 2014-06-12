@@ -198,8 +198,7 @@ ACCOUNT is a string of the form \"username@server\"."
 		(plist-get (cdr (assoc selected-mailbox
 				       (plist-get state-data :mailboxes)))
 			   :uidvalidity))
-	       (mailbox-dir (bic--mailbox-dir state-data selected-mailbox))
-	       (overview-table (bic--read-overview uidvalidity mailbox-dir))
+	       (overview-table (bic--read-overview state-data selected-mailbox))
 	       ;; Don't fetch messages we've already downloaded.
 	       ;; TODO: detect and react to flag changes
 	       (filtered-search-results
@@ -315,8 +314,10 @@ ACCOUNT is a string of the form \"username@server\"."
 	(message "FETCH request failed: %S" other)))
      ;; TODO: we have the data, do something with it.
      (list :connected state-data))
-    (`(:get-flags-table ,mailbox)
-     (funcall callback (bic--read-flags-table state-data mailbox))
+    (`(:get-mailbox-tables ,mailbox)
+     (funcall callback
+	      (list (bic--read-overview state-data mailbox)
+		    (bic--read-flags-table state-data mailbox)))
      (list :connected state-data))
     (`((:disconnected ,keyword ,reason) ,connection)
      (cond
@@ -328,6 +329,15 @@ ACCOUNT is a string of the form \"username@server\"."
       (t
        ;; Not ours.
        (list :connected state-data))))))
+
+(define-state bic-account :disconnected
+  (fsm state-data event callback)
+  (pcase event
+    (`(:get-mailbox-tables ,mailbox)
+     (funcall callback
+	      (list (bic--read-overview state-data mailbox)
+		    (bic--read-flags-table state-data mailbox)))
+     (list :disconnected state-data))))
 
 (defconst bic-filename-invalid-characters '(?< ?> ?: ?\" ?/ ?\\ ?| ?? ?* ?_)
   "Characters not allowed inside a file name component.
@@ -407,10 +417,33 @@ It also includes underscore, which is used as an escape character.")
 	      (insert uidvalidity)
 	      (write-region (point-min) (point-max) uidvalidity-file)))
 
-	  (bic--read-flags-table state-data mailbox-name))
+	  (bic--read-flags-table state-data mailbox-name)
+	  (bic--read-overview state-data mailbox-name))
       (warn "Missing UIDVALIDITY!  This is not good.")))
 
   (plist-put state-data :selected mailbox-name))
+
+(defun bic--read-overview (state-data mailbox-name)
+  (let ((overview-table (gethash mailbox-name (plist-get state-data :overview-per-mailbox)))
+	(overview-file (expand-file-name "overview" (bic--mailbox-dir state-data mailbox-name))))
+    (when (null overview-table)
+      (setq overview-table (make-hash-table :test 'equal))
+      (puthash mailbox-name overview-table (plist-get state-data :overview-per-mailbox))
+
+      ;; TODO: are there situations where we need to reread the overview file?
+      (when (file-exists-p overview-file)
+	(with-temp-buffer
+	  (insert-file-contents-literally overview-file)
+	  (goto-char (point-min))
+	  (while (search-forward-regexp
+		  (concat "^\\([0-9]+-[0-9]+\\) \\(.*\\)$")
+		  nil t)
+	    (let ((full-uid (match-string 1))
+		  (rest (match-string 2)))
+	      (pcase-let
+		  ((`(,overview . ,_) (read-from-string rest)))
+		(puthash full-uid overview overview-table)))))))
+    overview-table))
 
 (defun bic--read-flags-table (state-data mailbox-name)
   (let ((flags-table (gethash mailbox-name (plist-get state-data :flags-per-mailbox)))
@@ -518,31 +551,14 @@ It also includes underscore, which is used as an escape character.")
 			  (buffer-string)))
 	   (messages (directory-files bic--dir nil
 				      (concat "^" uidvalidity "-[0-9]+$"))))
-      (setq bic-mailbox--hashtable (bic--read-overview uidvalidity bic--dir))
-      (fsm-send (bic--find-account account) (list :get-flags-table mailbox)
-		(lambda (flags-table)
+      (fsm-send (bic--find-account account) (list :get-mailbox-tables mailbox)
+		(lambda (tables)
 		  (with-current-buffer buffer
-		    (setq bic-mailbox--flags-table flags-table)
+		    (setq bic-mailbox--hashtable (car tables))
+		    (setq bic-mailbox--flags-table (cadr tables))
 		    (let ((inhibit-read-only t))
 		      (dolist (msg messages)
 			(ewoc-enter-last bic-mailbox--ewoc msg)))))))))
-
-(defun bic--read-overview (uidvalidity dir)
-  (let ((overview-file (expand-file-name "overview" dir))
-	(hashtable (make-hash-table :test 'equal)))
-    (when (file-exists-p overview-file)
-      (with-temp-buffer
-	(insert-file-contents-literally overview-file)
-	(goto-char (point-min))
-	(while (search-forward-regexp
-		(concat "^\\(" uidvalidity "-[0-9]+\\) \\(.*\\)$")
-		nil t)
-	  (let ((full-uid (match-string 1))
-		(rest (match-string 2)))
-	    (pcase-let
-		((`(,envelope . ,_) (read-from-string rest)))
-	      (puthash full-uid envelope hashtable))))))
-    hashtable))
 
 (defun bic-mailbox--pp (msg)
   (let ((envelope (gethash msg bic-mailbox--hashtable))
