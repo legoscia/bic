@@ -244,17 +244,37 @@ ACCOUNT is a string of the form \"username@server\"."
     (`(:early-fetch-response ,selected-mailbox ,msg ,uidvalidity)
      (let* ((dir (bic--mailbox-dir state-data selected-mailbox))
 	    (overview-file (expand-file-name "overview" dir))
-	    (flags-table (gethash selected-mailbox
-				  (plist-get state-data :flags-per-mailbox)))
+	    (flags-file (expand-file-name "flags" dir))
+	    (flags-table (bic--read-flags-table state-data selected-mailbox))
 	    (coding-system-for-write 'binary))
        (pcase msg
 	 (`(,_seq "FETCH" ,msg-att)
 	  ;; TODO: check for mailbox view
 	  (let* ((uid-entry (member "UID" msg-att))
 		 (uid (cadr uid-entry))
+		 (full-uid (concat uidvalidity "-" uid))
 		 (body-entry (member "BODY" msg-att))
 		 (envelope-entry (member "ENVELOPE" msg-att))
 		 (flags-entry (member "FLAGS" msg-att)))
+
+	    (let ((existing-flags (gethash full-uid flags-table :not-found))
+		  (new-flags (cadr flags-entry)))
+	      (unless (equal existing-flags new-flags)
+		(puthash full-uid
+			 (cadr flags-entry)
+			 flags-table)
+		;; In the flags file, later entries override earlier
+		;; ones, so appending flags is safe.
+		;; TODO: rewrite flag file at suitable times
+		(with-temp-buffer
+		  (insert full-uid " ")
+		  (let ((print-escape-newlines t))
+		    (prin1 (bic--expand-literals new-flags)
+			   (current-buffer)))
+		  (insert "\n")
+		  (write-region (point-min) (point-max)
+				flags-file :append :silent))))
+
 	    (pcase body-entry
 	      ((guard (null uid))
 	       (warn "Missing UID in FETCH response: %S" msg))
@@ -264,13 +284,13 @@ ACCOUNT is a string of the form \"username@server\"."
 	       (with-current-buffer (marker-buffer start-marker)
 		 (write-region
 		  start-marker end-marker
-		  (expand-file-name (concat uidvalidity "-" uid) dir)
+		  (expand-file-name full-uid dir)
 		  nil :silent))
 	       (set-marker start-marker nil)
 	       (set-marker end-marker nil)
 	       ;; TODO: avoid duplicates
 	       (with-temp-buffer
-		 (insert uidvalidity "-" uid " ")
+		 (insert full-uid " ")
 		 ;; TODO: better format?
 		 ;; XXX: escape CR?
 		 (let ((print-escape-newlines t))
@@ -278,10 +298,7 @@ ACCOUNT is a string of the form \"username@server\"."
 			  (current-buffer)))
 		 (insert "\n")
 		 (write-region (point-min) (point-max)
-			       overview-file :append :silent))
-	       (puthash (concat uidvalidity "-" uid)
-			(cadr flags-entry)
-			flags-table))
+			       overview-file :append :silent)))
 	      (`("BODY" . ,other)
 	       (message "Unexpected BODY in FETCH response: %S" other))
 	      (other
