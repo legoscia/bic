@@ -69,6 +69,7 @@ ACCOUNT is a string of the form \"username@server\"."
 			      :username username
 			      :server server
 			      :dir dir
+			      :overview-per-mailbox (make-hash-table :test 'equal)
 			      :flags-per-mailbox (make-hash-table :test 'equal))))
 	    (if (file-directory-p dir)
 		(list :existing state-data)
