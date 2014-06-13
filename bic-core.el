@@ -791,7 +791,7 @@ the position beyond the closing double quote."
 ;;; quoted-specials = DQUOTE / "\"
   ;; Move past opening double quote.
   (cl-incf start)
-  (let ((i (1+ start))
+  (let ((i start)
 	string-parts)
     (while (and (< i (length line))
 		(setq i
