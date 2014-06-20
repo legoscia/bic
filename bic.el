@@ -244,6 +244,7 @@ ACCOUNT is a string of the form \"username@server\"."
     (`(:early-fetch-response ,selected-mailbox ,msg ,uidvalidity)
      (let* ((dir (bic--mailbox-dir state-data selected-mailbox))
 	    (overview-file (expand-file-name "overview" dir))
+	    (overview-table (bic--read-overview state-data selected-mailbox))
 	    (flags-file (expand-file-name "flags" dir))
 	    (flags-table (bic--read-flags-table state-data selected-mailbox))
 	    (coding-system-for-write 'binary))
@@ -288,21 +289,30 @@ ACCOUNT is a string of the form \"username@server\"."
 		  nil :silent))
 	       (set-marker start-marker nil)
 	       (set-marker end-marker nil)
-	       ;; TODO: avoid duplicates
-	       (with-temp-buffer
-		 (insert full-uid " ")
-		 ;; TODO: better format?
-		 ;; XXX: escape CR?
-		 (let ((print-escape-newlines t))
-		   (prin1 (bic--expand-literals (cadr envelope-entry))
-			  (current-buffer)))
-		 (insert "\n")
-		 (write-region (point-min) (point-max)
-			       overview-file :append :silent)))
+	       (let ((envelope-data (bic--expand-literals (cadr envelope-entry))))
+		 ;; TODO: avoid duplicates
+		 (with-temp-buffer
+		   (insert full-uid " ")
+		   ;; TODO: better format?
+		   ;; XXX: escape CR?
+		   (let ((print-escape-newlines t))
+		     (prin1 envelope-data (current-buffer)))
+		   (insert "\n")
+		   (write-region (point-min) (point-max)
+				 overview-file :append :silent))
+		 (puthash full-uid envelope-data overview-table)))
 	      (`("BODY" . ,other)
 	       (message "Unexpected BODY in FETCH response: %S" other))
 	      (other
-	       (message "Missing BODY in FETCH response: %S" other)))))
+	       (message "Missing BODY in FETCH response: %S" other)))
+
+	    (pcase (bic-mailbox--find-buffer
+		    (concat (plist-get state-data :username)
+			    "@" (plist-get state-data :server))
+		    selected-mailbox)
+	      ((and (pred bufferp) mailbox-buffer)
+	       (run-with-idle-timer
+		0.1 nil 'bic-mailbox--update-message mailbox-buffer full-uid)))))
 	 (other
 	  (message "Unexpected response to FETCH request: %S" other)))
        (list :connected state-data)))
@@ -503,6 +513,9 @@ It also includes underscore, which is used as an escape character.")
 
 (defvar-local bic-mailbox--ewoc nil)
 
+(defvar-local bic-mailbox--ewoc-nodes-table nil
+  "Hash table mapping uidvalidity+uid to ewoc nodes.")
+
 (defvar-local bic-mailbox--hashtable nil)
 
 (defvar-local bic-mailbox--flags-table nil)
@@ -521,6 +534,11 @@ It also includes underscore, which is used as an escape character.")
 	(bic-mailbox-mode)
 	(bic-mailbox--init account mailbox)))
     (switch-to-buffer buffer-name)))
+
+(defun bic-mailbox--find-buffer (account mailbox)
+  "Return the buffer viewing MAILBOX for ACCOUNT.
+If there is no such buffer, return nil."
+  (get-buffer (concat mailbox "-" account)))
 
 (defvar bic-mailbox-mode-map
   (let ((map (make-sparse-keymap)))
@@ -545,6 +563,8 @@ It also includes underscore, which is used as an escape character.")
     (erase-buffer)
     (setq bic-mailbox--ewoc
 	  (ewoc-create #'bic-mailbox--pp))
+    (setq bic-mailbox--ewoc-nodes-table
+	  (make-hash-table :test 'equal))
 
     (let* ((uidvalidity-file (expand-file-name "uidvalidity" bic--dir))
 	   (uidvalidity (with-temp-buffer
@@ -559,24 +579,29 @@ It also includes underscore, which is used as an escape character.")
 		    (setq bic-mailbox--flags-table (cadr tables))
 		    (let ((inhibit-read-only t))
 		      (dolist (msg messages)
-			(ewoc-enter-last bic-mailbox--ewoc msg)))))))))
+			(puthash
+			 msg (ewoc-enter-last bic-mailbox--ewoc msg)
+			 bic-mailbox--ewoc-nodes-table)))))))))
 
 (defun bic-mailbox--pp (msg)
   (let ((envelope (gethash msg bic-mailbox--hashtable))
 	(flags (gethash msg bic-mailbox--flags-table)))
-    (pcase-let ((`(,date ,subject (,from . ,_) . ,_) envelope))
-      ;; TODO: nicer format
-      (insert
-       (propertize
-	(concat
-	 (bic-mailbox--format-flags flags) " "
-	 (bic-mailbox--format-date date) "\t[ "
-	 (format "%-20.20s"
-		 (if (not (string= (car from) "NIL"))
-		     (rfc2047-decode-string (car from))
-		   (concat (nth 2 from) "@" (nth 3 from))))
-	 " ] " (rfc2047-decode-string subject))
-	'face (bic-mailbox--face-from-flags flags))))))
+    (pcase envelope
+      (`(,date ,subject (,from . ,_) . ,_)
+       ;; TODO: nicer format
+       (insert
+	(propertize
+	 (concat
+	  (bic-mailbox--format-flags flags) " "
+	  (bic-mailbox--format-date date) "\t[ "
+	  (format "%-20.20s"
+		  (if (not (string= (car from) "NIL"))
+		      (rfc2047-decode-string (car from))
+		    (concat (nth 2 from) "@" (nth 3 from))))
+	  " ] " (rfc2047-decode-string subject))
+	 'face (bic-mailbox--face-from-flags flags))))
+      (`nil
+       (warn "Message %s not found in hash table" msg)))))
 
 (defun bic-mailbox--face-from-flags (flags)
   (cond
@@ -633,6 +658,17 @@ It also includes underscore, which is used as an escape character.")
     (bic-message-display bic--current-account
 			 bic--current-mailbox
 			 msg)))
+
+(defun bic-mailbox--update-message (buffer full-uid)
+  (with-current-buffer buffer
+    (pcase (gethash full-uid bic-mailbox--ewoc-nodes-table)
+      (`nil
+       ;; Not found; add to end of buffer.
+       (puthash
+	full-uid (ewoc-enter-last bic-mailbox--ewoc full-uid)
+	bic-mailbox--ewoc-nodes-table))
+      (node
+       (ewoc-invalidate bic-mailbox--ewoc node)))))
 
 ;;; Message view
 
