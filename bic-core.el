@@ -51,7 +51,8 @@ doesn't have that, we use a weak hash table instead.")
   "Start looking at this key for markers to collect.")
 
 (define-state-machine bic-connection
-  :start ((username server connection-type &optional port callback)
+  :start ((username server connection-type
+		    &optional port callback auth-wait)
 	  "Start an IMAP connection.
 USERNAME is the username to authenticate as.
 SERVER is the server to connect to.
@@ -66,14 +67,21 @@ The first argument is always the FSM (can be compared with `eq').
 It will be called with :authenticated as the second argument once
 authentication has completed successfully.  It will also be
 called with \(:disconnected KEYWORD REASON-STRING\) when the
-connection is closed."
+connection is closed.
+
+If AUTH-WAIT is provided and non-nil, we establish an encrypted
+connection, but don't proceed with authentication immediately.
+The CALLBACK will be called with a second argument of :auth-wait,
+and the caller needs to send :proceed using `fsm-send' to
+proceed."
 	  (list :connecting
 		(list :name (concat username "@" server)
 		      :username username
 		      :server server
 		      :port port
 		      :connection-type connection-type
-		      :callback (or callback #'ignore)))))
+		      :callback (or callback #'ignore)
+		      :auth-wait auth-wait))))
 
 (define-enter-state bic-connection :connecting
   (fsm state-data)
@@ -155,6 +163,7 @@ connection is closed."
        (`(:ok ,capabilities ,_greeting-text)
 	(if (null capabilities)
 	    (list :wait-for-capabilities state-data)
+	  (plist-put state-data :capabilities capabilities)
 	  (bic--advance-connection-state fsm state-data capabilities)))
        (`(:bye ,text)
 	(bic--fail state-data
@@ -193,6 +202,20 @@ connection is closed."
      (message "Got event %S" event)
      (list :wait-for-capabilities state-data))))
 
+(define-state bic-connection :wait-for-auth-proceed
+  (fsm state-data event _callback)
+  (pcase event
+    (:proceed
+     (plist-put state-data :auth-wait nil)
+     (bic--advance-connection-state
+      fsm state-data
+      (plist-get state-data :capabilities)))
+    (`(:sentinel ,_process ,reason)
+     ;; strip trailing newline
+     (when (eq ?\n (aref reason (1- (length reason))))
+       (setq reason (substring reason 0 -1)))
+     (bic--fail state-data :connection-closed reason))))
+
 (defun bic--advance-connection-state (fsm state-data capabilities)
   (cond
    ((and (not (plist-get state-data :encrypted))
@@ -204,6 +227,12 @@ connection is closed."
       (bic--fail state-data
 		 :starttls-not-available
 		 "STARTTLS not available!")))
+   ((and (not (plist-get state-data :authenticated))
+	 (plist-get state-data :auth-wait))
+    ;; Our caller wants us to wait before proceeding with
+    ;; authentication.
+    (funcall (plist-get state-data :callback) fsm :auth-wait)
+    (list :wait-for-auth-proceed state-data))
    ((not (plist-get state-data :authenticated))
     (let* ((server-mechanisms (cdr (assq :auth capabilities)))
 	   (mechanism (sasl-find-mechanism server-mechanisms)))
