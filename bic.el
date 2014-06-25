@@ -25,6 +25,7 @@
 ;;; Code:
 
 (require 'fsm)
+(require 'srv)
 (require 'bic-core)
 (require 'cl-lib)
 (require 'utf7)
@@ -42,32 +43,24 @@
 (defvar bic-backlog-days 30
   "Messages no more than this old will be fetched.")
 
-(defun bic (username server)
-  (interactive "sIMAP username: \nsIMAP server: ")
-  (push (start-bic-account username server) bic-active-accounts))
+(defun bic (address)
+  (interactive "sEmail address: ")
+  (push (start-bic-account address) bic-active-accounts))
 
 (defun bic--find-account (account)
   "Find active FSM for ACCOUNT.
 ACCOUNT is a string of the form \"username@server\"."
-  (or (string-match "\\(.*\\)@\\(.*\\)" account)
-      (error "Invalid account name `%s'" account))
-  (let ((username (match-string 1 account))
-	(server (match-string 2 account)))
-    (cl-find-if (lambda (state-data)
-		  (and (string= username (plist-get state-data :username))
-		       (string= server (plist-get state-data :server))))
-		bic-active-accounts
-		:key #'fsm-get-state-data)))
+  (cl-find-if (lambda (state-data)
+		(string= account (plist-get state-data :address)))
+	      bic-active-accounts
+	      :key #'fsm-get-state-data))
 
 (define-state-machine bic-account
-  :start ((username server)
+  :start ((address)
 	  "Start using an IMAP account."
-	  (let* ((dir (expand-file-name
-		       (concat username "@" server)
-		       bic-data-directory))
+	  (let* ((dir (expand-file-name address bic-data-directory))
 		 (state-data (list
-			      :username username
-			      :server server
+			      :address address
 			      :dir dir
 			      :overview-per-mailbox (make-hash-table :test 'equal)
 			      :flags-per-mailbox (make-hash-table :test 'equal))))
@@ -82,48 +75,201 @@ ACCOUNT is a string of the form \"username@server\"."
 
 (define-enter-state bic-account :no-data
   (fsm state-data)
-  ;; We know nothing about this account.  Let's try connecting.
-  (let ((connection
-	 (start-bic-connection
-	  (plist-get state-data :username)
-	  (plist-get state-data :server)
-	  :starttls
-	  nil
-	  (lambda (connection status)
-	    (fsm-send fsm (list status connection))))))
-    (plist-put state-data :connection connection)
+  ;; We know nothing about this account.  Let's try to figure out the
+  ;; mail server hostname.
+  ;;
+  ;; First, look for SRV records, as described in RFC 6186.
+  ;;
+  ;; We don't follow the specifications precisely when it comes to
+  ;; verifying certificates for hostnames found through SRV, but
+  ;; that's because noone else does.
+  (let* ((address (plist-get state-data :address))
+	 (domain-name (substring address (1+ (cl-position ?@ address))))
+	 (imaps-srv-results (srv-lookup (concat "_imaps._tcp." domain-name)))
+	 (srv-candidate nil)
+	 (candidates nil))
+    ;; Empty hostname means "service not available".
+    (setq imaps-srv-results (cl-delete "" imaps-srv-results :key 'car))
+    (if imaps-srv-results
+	;; Strictly speaking, we should go through all results in
+	;; priority order, and pick the first one that works, but
+	;; since the hosts are unlikely to have SRV-ID (RFC 4985)
+	;; fields in their certificates (and since we don't have
+	;; methods to retrieve those fields), we would have to ask the
+	;; user to confirm every single host, which would be
+	;; confusing.  So let's pick the first one for now.
+	(setq srv-candidate (list
+			     (caar imaps-srv-results)
+			     (cdar imaps-srv-results)
+			     :plaintls))
+      ;; No IMAPS service advertised.  What about plain IMAP
+      ;; (hopefully with STARTTLS)?
+      (let ((imap-srv-results (srv-lookup (concat "_imap._tcp." domain-name))))
+	(setq imap-srv-results (cl-delete "" imap-srv-results :key 'car))
+	(when imap-srv-results
+	  (setq srv-candidate (list
+			       (car imaps-srv-results)
+			       (cdr imaps-srv-results)
+			       :starttls)))))
+
+    ;; Ask user if SRV result is okay.
+    (when srv-candidate
+      (when (yes-or-no-p
+	     (format "Use %s:%d as IMAP server? "
+		     (car srv-candidate)
+		     (cadr srv-candidate)))
+	(setq candidates (list srv-candidate))))
+
+    (unless candidates
+      (let* ((response (read-string
+			(format "IMAP server for %s (hostname or hostname:port): "
+				address)))
+	     (colon-pos (cl-position ?: response)))
+	(if colon-pos
+	    ;; User specified port
+	    (let ((hostname (substring response 0 colon-pos))
+		  (port (string-to-number (substring response (1+ colon-pos)))))
+	      ;; For ports 143 and 993, we know what to expect.
+	      (cl-case port
+		(143
+		 (push (list hostname port :starttls) candidates))
+		(993
+		 (push (list hostname port :plaintls) candidates))
+		(t
+		 ;; For other ports, try both plain TLS and STARTTLS.
+		 (push (list hostname port :starttls) candidates)
+		 (push (list hostname port :plaintls) candidates))))
+	  ;; No port specified.  Try both 143 and 993.
+	  (push (list response 143 :starttls) candidates)
+	  (push (list response 993 :plaintls) candidates))))
+
+    (plist-put state-data :candidates candidates)
+    (let* ((address (plist-get state-data :address))
+	   (user-part (substring address 0 (cl-position ?@ address))))
+      (pcase (widget-choose
+	      "IMAP username"
+	      (list (cons (concat "Authenticate as " address) address)
+		    (cons (concat "Authenticate as " user-part) user-part)
+		    (cons "Use a different username" nil)))
+	((and (pred stringp) username)
+	 (plist-put state-data :username username))
+	(`nil
+	 (plist-put state-data :username (read-string "Enter IMAP username: ")))))
+    (fsm-send fsm :try-connect)
     (list state-data nil)))
 
 (define-state bic-account :no-data
-  (fsm state-data event callback)
+  (fsm state-data event _callback)
   (pcase event
-    (`((:disconnected ,keyword ,reason) ,_)
-     (message "Initial connection to %s@%s failed: %s (%s)"
-	      (plist-get state-data :username)
-	      (plist-get state-data :server)
-	      reason
-	      keyword)
-     (list nil state-data))
+    (:try-connect
+     ;; Now we have a number of connection candidates.  Let's connect
+     ;; to all of them and pick the one that answers first.
+     (let ((candidate-connections
+	    (mapcar
+	     (lambda (candidate)
+	       (pcase-let ((`(,hostname ,port ,connection-type) candidate))
+		 (cons
+		  (start-bic-connection
+		   (plist-get state-data :username)
+		   hostname
+		   connection-type
+		   port
+		   (lambda (connection status)
+		     (fsm-send fsm (list status connection)))
+		   :auth-wait)
+		  candidate)))
+	     (plist-get state-data :candidates))))
+       (plist-put state-data :candidate-connections candidate-connections)
+       (list :no-data state-data)))
+
+    ((and (guard (not (plist-get state-data :connection)))
+	  `(:auth-wait ,chosen-connection))
+     ;; One of our candidate connections is ready to begin
+     ;; authentication, and we haven't chosen a different connection
+     ;; already.
+     (let* ((candidate-connections (plist-get state-data :candidate-connections))
+	    (chosen-candidate (cdr (assq chosen-connection candidate-connections)))
+	    (other-connections
+	     (remq chosen-connection (mapcar 'car candidate-connections))))
+       (plist-put state-data :chosen-candidate chosen-candidate)
+       ;; TODO: close `other-connections'
+       (plist-put state-data :connection chosen-connection)
+       (fsm-send chosen-connection :proceed)
+       (list :no-data state-data)))
+
+    (`((:disconnected ,keyword ,reason) ,bad-connection)
+     (let* ((candidate-connections (plist-get state-data :candidate-connections))
+	    (bad-candidate (cdr (assq bad-connection candidate-connections))))
+       (message "Connection to %s:%d failed: %s (%s)"
+		(cl-first bad-candidate) (cl-second bad-candidate)
+		reason keyword)
+       (setq candidate-connections
+	     (cl-remove bad-connection candidate-connections :key 'car))
+       (plist-put state-data :candidate-connections candidate-connections)
+       (if candidate-connections
+	   ;; We are still waiting to hear from some other connection.
+	   (list :no-data state-data)
+	 (message "Cannot connect to server for %s, and not enough data for offline operation"
+		  (plist-get state-data :address))
+	 (list nil state-data))))
     (`(:authenticated ,_)
      ;; That's good enough for now; let's create the directory.
      ;; Mail directories should not be group- or world-readable.
      (with-file-modes #o700
        (make-directory (plist-get state-data :dir) t))
-     (list :connected state-data))))
+     ;; Let's save the hostname+port+type combo that was successful.
+     (with-temp-buffer
+       (pcase-let ((`(,hostname ,port ,connection-type)
+		    (plist-get state-data :chosen-candidate)))
+	 (insert
+	  (cl-ecase connection-type
+	    (:starttls "imap")
+	    (:plaintls "imaps"))
+	  "://"
+	  (url-hexify-string (plist-get state-data :username))
+	  "@"
+	  hostname
+	  ;; Only include port if it's not the default port
+	  (pcase (cons connection-type port)
+	    (`(:starttls . 143) "")
+	    (`(:plaintls . 993) "")
+	    (_ (format ":%d" port)))
+	  "\n")
+	 (write-region (point-min) (point-max)
+		       (expand-file-name "connection-info"
+					 (plist-get state-data :dir))
+		       nil :silent)))
+       (list :connected state-data))))
 
 (define-enter-state bic-account :existing
   (fsm state-data)
   ;; Let's try connecting, but we do have some offline data, and can
   ;; use that if we can't connect.
-  (let ((connection
-	 (start-bic-connection
-	  (plist-get state-data :username)
-	  (plist-get state-data :server)
-	  :starttls
-	  nil
-	  (lambda (connection status)
-	    (fsm-send fsm (list status connection))))))
+  (let* ((dir (plist-get state-data :dir))
+	 (connection-url
+	  (with-temp-buffer
+	    (insert-file-contents-literally (expand-file-name "connection-info" dir))
+	    (goto-char (point-min))
+	    (buffer-substring (point-min) (point-at-eol))))
+	 (parsed-url (url-generic-parse-url connection-url))
+	 (username (url-unhex-string (url-user parsed-url)))
+	 (server (url-host parsed-url))
+	 (connection
+	  (start-bic-connection
+	   username
+	   server
+	   (pcase (url-type parsed-url)
+	     ("imap" :starttls)
+	     ("imaps" :plaintls)
+	     (bad-type (error "Invalid URL protocol `%s'" bad-type)))
+	   (pcase (url-port parsed-url)
+	     (0 nil)
+	     (port port))
+	   (lambda (connection status)
+	     (fsm-send fsm (list status connection))))))
     (plist-put state-data :connection connection)
+    (plist-put state-data :username username)
+    (plist-put state-data :server server)
     (list state-data nil)))
 
 (define-state bic-account :existing
@@ -307,8 +453,7 @@ ACCOUNT is a string of the form \"username@server\"."
 	       (message "Missing BODY in FETCH response: %S" other)))
 
 	    (pcase (bic-mailbox--find-buffer
-		    (concat (plist-get state-data :username)
-			    "@" (plist-get state-data :server))
+		    (plist-get state-data :address)
 		    selected-mailbox)
 	      ((and (pred bufferp) mailbox-buffer)
 	       (run-with-idle-timer
