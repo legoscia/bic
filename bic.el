@@ -108,8 +108,8 @@ ACCOUNT is a string of the form \"username@server\"."
 	(setq imap-srv-results (cl-delete "" imap-srv-results :key 'car))
 	(when imap-srv-results
 	  (setq srv-candidate (list
-			       (car imaps-srv-results)
-			       (cdr imaps-srv-results)
+			       (caar imap-srv-results)
+			       (cdar imap-srv-results)
 			       :starttls)))))
 
     ;; Ask user if SRV result is okay.
