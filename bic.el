@@ -276,13 +276,12 @@ ACCOUNT is a string of the form \"username@server\"."
   (fsm state-data event _callback)
   (pcase event
     (`((:disconnected ,keyword ,reason) ,_)
-     ;; TODO: start offline operation
      (message "Initial connection to %s@%s failed: %s (%s)"
 	      (plist-get state-data :username)
 	      (plist-get state-data :server)
 	      reason
 	      keyword)
-     (list nil state-data))
+     (list :disconnected state-data))
     (`(:authenticated ,_)
      (list :connected state-data))))
 
