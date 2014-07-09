@@ -141,7 +141,8 @@ proceed."
 			(format "Cannot negotiate TLS for %s: %s"
 				(plist-get state-data :server)
 				(error-message-string e))))))))
-      ((string-prefix-p "failed" string)
+      ((or (string-prefix-p "failed" string)
+	   (string-prefix-p "deleted" string))
        (bic--fail state-data
 		  :connection-failed
 		  (format "connection failed: %s" string)))
