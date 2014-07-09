@@ -1098,7 +1098,7 @@ If there is no such buffer, return nil."
 	     ?\s)))
    'help-echo (concat "Flags: "
 		      (if flags
-			  (mapconcat 'identity flags ", ")
+			  (mapconcat 'identity (remq :pending flags) ", ")
 			"none"))))
 
 (defun bic-mailbox--format-date (date)
