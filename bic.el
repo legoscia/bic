@@ -313,6 +313,7 @@ ACCOUNT is a string of the form \"username@server\"."
 (define-enter-state bic-account :connected
   (fsm state-data)
   (plist-put state-data :ever-connected t)
+  (plist-put state-data :selected nil)
   ;; Find pending flag changes
   (let* ((default-directory (plist-get state-data :dir))
 	 (pending-flags-files (file-expand-wildcards "*/pending-flags"))
@@ -332,7 +333,8 @@ ACCOUNT is a string of the form \"username@server\"."
 	  (list (list "INBOX" :download-messages))))
     ;; NB: Overwriting any existing tasks from previous connections.
     (plist-put state-data :tasks (append pending-flags-tasks
-					 download-messages-tasks)))
+					 download-messages-tasks))
+    (plist-put state-data :current-task nil))
 
   ;; Get list of mailboxes
   (bic-command (plist-get state-data :connection)
