@@ -31,6 +31,8 @@
 (require 'utf7)
 (require 'ewoc)
 (require 'gnus-art)
+(require 'gnus-range)
+(require 'hex-util)
 
 (defgroup bic nil
   "Settings for the Best IMAP Client."
@@ -287,6 +289,27 @@ ACCOUNT is a string of the form \"username@server\"."
 
 (define-enter-state bic-account :connected
   (fsm state-data)
+  ;; Find pending flag changes
+  (let* ((default-directory (plist-get state-data :dir))
+	 (pending-flags-files (file-expand-wildcards "*/pending-flags"))
+	 ;; TODO: trim empty files?
+	 (mailboxes-with-pending-flags
+	  (mapcar
+	   (lambda (pending-flags-file)
+	     (bic--unsanitize-mailbox-name
+	      (directory-file-name
+	       (file-name-directory pending-flags-file))))
+	   pending-flags-files))
+	 (pending-flags-tasks (mapcar (lambda (mailbox)
+					(list mailbox :pending-flags))
+				      mailboxes-with-pending-flags))
+	 (download-messages-tasks
+	  ;; TODO: do something clever here.
+	  (list (list "INBOX" :download-messages))))
+    ;; NB: Overwriting any existing tasks from previous connections.
+    (plist-put state-data :tasks (append pending-flags-tasks
+					 download-messages-tasks)))
+
   ;; Get list of mailboxes
   (bic-command (plist-get state-data :connection)
 	       "LIST \"\" \"*\""
@@ -307,12 +330,7 @@ ACCOUNT is a string of the form \"username@server\"."
 
 	;; XXX: do we _really_ want an extra connection?..  We could
 	;; probably do that later.
-	(let ((c (plist-get state-data :connection)))
-	  ;; TODO: which mailbox?
-	  (bic-command
-	   c "SELECT INBOX"
-	   (lambda (select-response)
-	     (fsm-send fsm (list :select-response "INBOX" select-response)))))
+	(bic--maybe-next-task fsm state-data)
 	(list :connected state-data nil))
        ;; TODO: handle LIST error
        ))
@@ -322,70 +340,19 @@ ACCOUNT is a string of the form \"username@server\"."
 	(message "Got successful SELECT response: %S" select-data)
 	(bic--handle-select-response state-data mailbox-name select-data)
 
-	(bic-command (plist-get state-data :connection)
-		     ;; XXX: SEARCH or UID SEARCH?
-		     (concat "UID SEARCH OR UNSEEN SINCE "
-			     (bic--date-text
-			      (time-subtract (current-time)
-					     (days-to-time bic-backlog-days))))
-		     (lambda (search-response)
-		       (fsm-send fsm (list :search-response search-response))))
+	;; Check if we're doing a task here
+	(pcase (plist-get state-data :current-task)
+	  ((and `(,(pred (string= mailbox-name)) . ,_)
+		current-task)
+	   (bic--do-task fsm state-data current-task))
+	  (current-task
+	   ;; TODO: next task?
+	   (when current-task
+	     (warn "doing nothing about %S" current-task))
+	  ))
 	(list :connected state-data nil))
        ;; TODO: handle SELECT error
        ))
-    (`(:search-response ,search-response)
-     (message "Got SEARCH response: %S" search-response)
-     ;; TODO: download the messages in question
-     (pcase search-response
-       (`(:ok ,_ ,search-data)
-	(let* ((search-results (cdr (assoc "SEARCH" search-data)))
-	       (selected-mailbox (plist-get state-data :selected))
-	       (uidvalidity
-		(plist-get (cdr (assoc selected-mailbox
-				       (plist-get state-data :mailboxes)))
-			   :uidvalidity))
-	       (overview-table (bic--read-overview state-data selected-mailbox))
-	       ;; Don't fetch messages we've already downloaded.
-	       ;; TODO: detect and react to flag changes
-	       (filtered-search-results
-		(cl-remove-if
-		 (lambda (uid) (gethash (concat uidvalidity "-" uid) overview-table))
-		 search-results)))
-	  (when filtered-search-results
-	    (let* ((count (length filtered-search-results))
-		   (progress
-		    (make-progress-reporter
-		     (format "Fetching %d messages from %s..."
-			     count selected-mailbox)
-		     0 count))
-		   (n 0))
-	      ;; These should be UIDs, since they are a response to a UID
-	      ;; SEARCH command.
-	      ;; XXX: use plain search and plain fetch instead?
-	      (bic-command
-	       (plist-get state-data :connection)
-	       (concat "UID FETCH "
-		       (mapconcat #'identity filtered-search-results ",")
-		       ;; TODO: Is "BODY.PEEK[]" the right choice?
-		       " (ENVELOPE INTERNALDATE FLAGS BODY.PEEK[])")
-	       (lambda (fetch-response)
-		 (progress-reporter-done progress)
-		 (fsm-send fsm (list :fetch-response
-				     selected-mailbox
-				     fetch-response
-				     uidvalidity)))
-	       (list
-		(list 1 "FETCH"
-		      (lambda (one-fetch-response)
-			(cl-incf n)
-			(progress-reporter-update progress n)
-			(fsm-send fsm (list :early-fetch-response
-					    selected-mailbox
-					    one-fetch-response
-					    uidvalidity))))))))
-	  (list :connected state-data nil))
-	;; TODO: handle SEARCH error
-	)))
     (`(:early-fetch-response ,selected-mailbox ,msg ,uidvalidity)
      (let* ((dir (bic--mailbox-dir state-data selected-mailbox))
 	    (overview-file (expand-file-name "overview" dir))
@@ -449,30 +416,89 @@ ACCOUNT is a string of the form \"username@server\"."
 	      (`("BODY" . ,other)
 	       (message "Unexpected BODY in FETCH response: %S" other))
 	      (other
+	       ;; TODO: only warn if message absent in overview?
 	       (message "Missing BODY in FETCH response: %S" other)))
 
-	    (pcase (bic-mailbox--find-buffer
-		    (plist-get state-data :address)
-		    selected-mailbox)
-	      ((and (pred bufferp) mailbox-buffer)
-	       (run-with-idle-timer
-		0.1 nil 'bic-mailbox--update-message mailbox-buffer full-uid)))))
+	    (bic-mailbox--maybe-update-message
+	     (plist-get state-data :address)
+	     selected-mailbox full-uid)))
 	 (other
 	  (message "Unexpected response to FETCH request: %S" other)))
        (list :connected state-data)))
-    (`(:fetch-response ,selected-mailbox ,fetch-response ,uidvalidity)
-     (pcase fetch-response
-       (`(:ok ,_ ,fetched-messages)
-	(when fetched-messages
-	  (message "Extra response lines for FETCH: %S" fetched-messages)))
-       (other
-	(message "FETCH request failed: %S" other)))
-     ;; TODO: we have the data, do something with it.
-     (list :connected state-data))
     (`(:get-mailbox-tables ,mailbox)
      (funcall callback
 	      (list (bic--read-overview state-data mailbox)
 		    (bic--read-flags-table state-data mailbox)))
+     (list :connected state-data))
+    (`(:task-finished ,task)
+     ;; Check that this actually is the task we think we're doing
+     ;; right now.
+     (if (not (eq task (plist-get state-data :current-task)))
+	 (warn "Task %S finished while doing task %S"
+	       task (plist-get state-data :current-task))
+       (plist-put state-data :current-task nil)
+       (bic--maybe-next-task fsm state-data))
+     (list :connected state-data))
+    ((and `(:flags ,mailbox ,full-uid ,flags-to-add ,flags-to-remove)
+	  (let `(,uidvalidity ,uid) (split-string full-uid "-")))
+     (cond
+      ((string= mailbox (plist-get state-data :selected))
+       ;; We want to change flags in the mailbox that's currently
+       ;; selected - that's easy.
+       (if (not (string= uidvalidity
+			 (plist-get (cdr
+				     (assoc mailbox (plist-get state-data :mailboxes)))
+				    :uidvalidity)))
+	   ;; TODO: handle this somehow
+	   (warn "Cannot change flags in %s; uidvalidity mismatch (%s vs %s)"
+		 mailbox uidvalidity (plist-get (cdr
+						 (assoc mailbox (plist-get state-data :mailboxes)))
+						:uidvalidity))
+	 (let* ((current-flags (gethash full-uid (bic--read-flags-table state-data mailbox)))
+		(need-to-add (cl-set-difference flags-to-add current-flags :test 'string=))
+		(need-to-remove (cl-intersection current-flags flags-to-remove :test 'string=)))
+	   ;; TODO: remove duplication
+	   ;; TODO: handle untagged responses generally, not per request
+	   (when need-to-add
+	     (bic-command
+	      (plist-get state-data :connection)
+	      (concat "UID STORE " uid " +FLAGS ("
+		      (mapconcat #'identity need-to-add " ")
+		      ")")
+	      (lambda (store-response)
+		(unless (eq (car store-response) :ok)
+		  (message "Couldn't change flags: %s"
+			   (plist-get (cl-second store-response) :text))))
+	      (list
+	       (list 1 "FETCH"
+		     (lambda (one-fetch-response)
+		       (fsm-send fsm (list :early-fetch-response
+					   mailbox
+					   one-fetch-response
+					   uidvalidity)))))))
+	   (when need-to-remove
+	     (bic-command
+	      (plist-get state-data :connection)
+	      (concat "UID STORE " uid " -FLAGS ("
+		      (mapconcat #'identity need-to-remove " ")
+		      ")")
+	      (lambda (store-response)
+		(unless (eq (car store-response) :ok)
+		  (message "Couldn't change flags: %s"
+			   (plist-get (cl-second store-response) :text))))
+	      (list
+	       (list 1 "FETCH"
+		     (lambda (one-fetch-response)
+		       (fsm-send fsm (list :early-fetch-response
+					   mailbox
+					   one-fetch-response
+					   uidvalidity))))))))))
+      (t
+       (bic--write-pending-flags mailbox full-uid flags-to-add flags-to-remove state-data)
+       (plist-put state-data
+		  :tasks (append (plist-get state-data :tasks)
+				 (list (list mailbox :pending-flags))))
+       (bic--maybe-next-task fsm state-data)))
      (list :connected state-data))
     (`((:disconnected ,keyword ,reason) ,connection)
      (cond
@@ -492,6 +518,9 @@ ACCOUNT is a string of the form \"username@server\"."
      (funcall callback
 	      (list (bic--read-overview state-data mailbox)
 		    (bic--read-flags-table state-data mailbox)))
+     (list :disconnected state-data))
+    (`(:flags ,mailbox ,full-uid ,flags-to-add ,flags-to-remove)
+     (bic--write-pending-flags mailbox full-uid flags-to-add flags-to-remove state-data)
      (list :disconnected state-data))))
 
 (defconst bic-filename-invalid-characters '(?< ?> ?: ?\" ?/ ?\\ ?| ?? ?* ?_)
@@ -514,6 +543,16 @@ It also includes underscore, which is used as an escape character.")
       (setq sanitized-to (1+ i)))
     (push (substring decoded sanitized-to) sanitized-segments)
     (apply #'concat (nreverse sanitized-segments))))
+
+(defun bic--unsanitize-mailbox-name (directory-name)
+  "Convert a directory name to a UTF-7 mailbox name."
+  (let ((i 0) segments)
+    (while (string-match "_\\([[:xdigit:]]+\\)_" directory-name i)
+      (push (substring directory-name i (match-beginning 0)) segments)
+      (push (string (string-to-number (match-string 1 directory-name) 16)) segments)
+      (setq i (match-end 0)))
+    (push (substring directory-name i) segments)
+    (utf7-encode (apply 'concat (nreverse segments)) t)))
 
 (defun bic--mailbox-dir (state-data mailbox-name)
   (expand-file-name
@@ -578,6 +617,176 @@ It also includes underscore, which is used as an escape character.")
 
   (plist-put state-data :selected mailbox-name))
 
+(defun bic--maybe-next-task (fsm state-data)
+  (unless (plist-get state-data :current-task)
+    (let* ((tasks (plist-get state-data :tasks))
+	   (task (pop tasks))
+	   (mailbox (car task)))
+      (when task
+	(plist-put state-data :current-task task)
+	(plist-put state-data :tasks tasks)
+	(if (string= mailbox (plist-get state-data :selected))
+	    (bic--do-task fsm state-data task)
+	  (bic-command
+	   (plist-get state-data :connection)
+	   (concat "SELECT " (bic-quote-string mailbox))
+	   (lambda (select-response)
+	     (fsm-send fsm (list :select-response mailbox select-response)))))))))
+
+(defun bic--do-task (fsm state-data task)
+  (pcase task
+    (`(,mailbox :pending-flags)
+     ;; At this point, we should have selected the mailbox already.
+     (cl-assert (string= mailbox (plist-get state-data :selected)))
+     (let ((pending-flags-file
+	    (expand-file-name "pending-flags" (bic--mailbox-dir state-data mailbox)))
+	   (mailbox-uidvalidity
+	    (plist-get (cdr (assoc mailbox
+				   (plist-get state-data :mailboxes)))
+		       :uidvalidity))
+	   (flag-combinations (make-hash-table :test 'equal))
+	   (discarded 0)
+	   file-offset)
+       ;; Find sets of messages that have identical sets of flags
+       ;; applied, to minimise the number of commands we need to send.
+       (with-temp-buffer
+	 (insert-file-contents-literally pending-flags-file)
+	 (goto-char (point-min))
+	 (while (search-forward-regexp
+		 (concat "^\\([0-9]+\\)-\\([0-9]+\\)\\([+-]\\)\\(.*\\)$")
+		 nil t)
+	   (let* ((uidvalidity (match-string 1))
+		  (uid (match-string 2))
+		  (add-remove (match-string 3))
+		  (flags (car (read-from-string (match-string 4)))))
+	     (if (string= uidvalidity mailbox-uidvalidity)
+		 (push uid (gethash (cons add-remove flags) flag-combinations))
+	       (cl-incf discarded))))
+	 (setq file-offset (point)))
+       (unless (zerop discarded)
+	 (warn "Discarding %d pending flag changes for %s"
+	       discarded mailbox))
+       (let ((remaining-entries-count (hash-table-count flag-combinations))
+	     (all-successful t))
+	 (if (zerop remaining-entries-count)
+	     ;; Nothing to do.
+	     (fsm-send fsm (list :task-finished task))
+	   (maphash
+	    (lambda (add-remove-flags uids)
+	      (let ((add-remove (car add-remove-flags))
+		    (flags (cdr add-remove-flags))
+		    (ranges
+		     (gnus-compress-sequence
+		      (sort (mapcar 'string-to-number uids) '<)
+		      t)))
+		;; On a 32-bit Emacs, ranges may contain floating point
+		;; numbers - but they're exact enough to represent 32-bit
+		;; integers.
+		(bic-command
+		 (plist-get state-data :connection)
+		 (concat "UID STORE " (bic-format-ranges ranges) " "
+			 add-remove "FLAGS ("
+			 ;; No need to quote flags; they should be atoms.
+			 (mapconcat #'identity flags " ")
+			 ")")
+		 (lambda (store-response)
+		   (cl-decf remaining-entries-count)
+		   (unless (eq (car store-response) :ok)
+		     (warn "Couldn't change flags in %s: %s"
+			   mailbox
+			   (plist-get (cl-second store-response) :text))
+		     ;; Ensure we don't clear the pending flags file
+		     (setq all-successful nil))
+		   ;; All completed?  If so, clear pending flags file
+		   ;; up to the point where we read the last entry -
+		   ;; but keep it if there was an error.
+		   (when (zerop remaining-entries-count)
+		     (when all-successful
+		       (with-temp-buffer
+			 (insert-file-contents-literally pending-flags-file)
+			 (write-region file-offset (point-max) pending-flags-file
+				       nil :silent)))
+		     (fsm-send fsm (list :task-finished task))))
+		 (list
+		  (list 1 "FETCH"
+			(lambda (one-fetch-response)
+			  (fsm-send fsm (list :early-fetch-response
+					      mailbox
+					      one-fetch-response
+					      mailbox-uidvalidity))))))))
+	    flag-combinations)))))
+    (`(,mailbox :download-messages)
+     ;; At this point, we should have selected the mailbox already.
+     (cl-assert (string= mailbox (plist-get state-data :selected)))
+     (bic-command
+      (plist-get state-data :connection)
+      ;; XXX: SEARCH or UID SEARCH?
+      (concat "UID SEARCH OR UNSEEN SINCE "
+	      (bic--date-text
+	       (time-subtract (current-time)
+			      (days-to-time bic-backlog-days))))
+      (lambda (search-response)
+	(bic--handle-search-response fsm state-data task search-response))))
+    (_
+     (warn "Unknown task %S" task))))
+
+(defun bic--handle-search-response (fsm state-data task search-response)
+  ;; Handle search response by fetching the body of all messages that
+  ;; we don't have yet.
+  (pcase search-response
+    (`(:ok ,_ ,search-data)
+     (let* ((search-results (cdr (assoc "SEARCH" search-data)))
+	    (mailbox (car task))
+	    (uidvalidity
+	     (plist-get (cdr (assoc mailbox (plist-get state-data :mailboxes)))
+			:uidvalidity))
+	    (overview-table (bic--read-overview state-data mailbox))
+	    ;; Don't fetch messages we've already downloaded.
+	    ;; TODO: detect and react to flag changes
+	    ;; TODO: is it possible that we have the envelope, but not the body?
+	    (filtered-search-results
+	     (cl-remove-if
+	      (lambda (uid) (gethash (concat uidvalidity "-" uid) overview-table))
+	      search-results)))
+       (when filtered-search-results
+	 (let* ((count (length filtered-search-results))
+		(progress
+		 (make-progress-reporter
+		  (format "Fetching %d messages from %s..."
+			  count mailbox)
+		  0 count))
+		(n 0))
+	   ;; These should be UIDs, since they are a response to a UID
+	   ;; SEARCH command.
+	   ;; XXX: use plain search and plain fetch instead?
+	   (bic-command
+	    (plist-get state-data :connection)
+	    (concat "UID FETCH "
+		    (mapconcat #'identity filtered-search-results ",")
+		    ;; TODO: Is "BODY.PEEK[]" the right choice?
+		    " (ENVELOPE INTERNALDATE FLAGS BODY.PEEK[])")
+	    (lambda (fetch-response)
+	      (progress-reporter-done progress)
+	      (pcase fetch-response
+		(`(:ok ,_ ,fetched-messages)
+		 (when fetched-messages
+		   (message "Extra response lines for FETCH: %S" fetched-messages)))
+		(other
+		 (warn "FETCH request failed: %S" other)))
+	      (fsm-send fsm (list :task-finished task)))
+	    (list
+	     (list 1 "FETCH"
+		   (lambda (one-fetch-response)
+		     (cl-incf n)
+		     (progress-reporter-update progress n)
+		     (fsm-send fsm (list :early-fetch-response
+					 mailbox
+					 one-fetch-response
+					 uidvalidity))))))))
+       (list :connected state-data nil))
+     ;; TODO: handle SEARCH error
+     )))
+
 (defun bic--read-overview (state-data mailbox-name)
   (let ((overview-table (gethash mailbox-name (plist-get state-data :overview-per-mailbox)))
 	(overview-file (expand-file-name "overview" (bic--mailbox-dir state-data mailbox-name))))
@@ -601,26 +810,87 @@ It also includes underscore, which is used as an escape character.")
     overview-table))
 
 (defun bic--read-flags-table (state-data mailbox-name)
-  (let ((flags-table (gethash mailbox-name (plist-get state-data :flags-per-mailbox)))
-	(flags-file (expand-file-name "flags" (bic--mailbox-dir state-data mailbox-name))))
+  (let ((flags-table (gethash mailbox-name (plist-get state-data :flags-per-mailbox))))
     (when (null flags-table)
       (setq flags-table (make-hash-table :test 'equal))
       (puthash mailbox-name flags-table (plist-get state-data :flags-per-mailbox))
 
-      ;; TODO: are there situations where we need to reread the flags file?
-      (when (file-exists-p flags-file)
-	(with-temp-buffer
-	  (insert-file-contents-literally flags-file)
-	  (goto-char (point-min))
-	  (while (search-forward-regexp
-		  (concat "^\\([0-9]+-[0-9]+\\) \\(.*\\)$")
-		  nil t)
-	    (let ((full-uid (match-string 1))
-		  (rest (match-string 2)))
-	      (pcase-let
-		  ((`(,flags . ,_) (read-from-string rest)))
-		(puthash full-uid flags flags-table)))))))
+      (let* ((dir (bic--mailbox-dir state-data mailbox-name))
+	     (flags-file (expand-file-name "flags" dir))
+	     (pending-flags-file (expand-file-name "pending-flags" dir)))
+	;; TODO: are there situations where we need to reread the flags file?
+	(when (file-exists-p flags-file)
+	  (with-temp-buffer
+	    (insert-file-contents-literally flags-file)
+	    (goto-char (point-min))
+	    (while (search-forward-regexp
+		    (concat "^\\([0-9]+-[0-9]+\\) \\(.*\\)$")
+		    nil t)
+	      (let ((full-uid (match-string 1))
+		    (rest (match-string 2)))
+		(pcase-let
+		    ((`(,flags . ,_) (read-from-string rest)))
+		  (puthash full-uid flags flags-table))))))
+	(when (file-exists-p pending-flags-file)
+	  (with-temp-buffer
+	    (insert-file-contents-literally pending-flags-file)
+	    (goto-char (point-min))
+	    (while (search-forward-regexp
+		    (concat "^\\([0-9]+-[0-9]+\\)\\([+-]\\)\\(.*\\)$")
+		    nil t)
+	      (let* ((full-uid (match-string 1))
+		     (add-remove (match-string 2))
+		     (flags (car (read-from-string (match-string 3))))
+		     (existing-flags (gethash full-uid flags-table))
+		     (new-flags
+		      (pcase add-remove
+			("+" (cl-union existing-flags flags :test 'string=))
+			("-" (cl-set-difference existing-flags flags :test 'string=)))))
+		(puthash full-uid (cl-adjoin :pending new-flags) flags-table)))))))
     flags-table))
+
+(defun bic--write-pending-flags (mailbox full-uid flags-to-add flags-to-remove state-data)
+  (pcase-let ((`(,uidvalidity ,_uid) (split-string full-uid "-"))
+	      (stored-uid-validity
+	       (plist-get (cdr (assoc mailbox (plist-get state-data :mailboxes)))
+			  :uidvalidity)))
+    (if (and stored-uid-validity
+	     (not (string= uidvalidity stored-uid-validity)))
+	;; TODO: handle this somehow
+	(warn "Cannot change flags in %s; uidvalidity mismatch (%s vs %s)"
+	      mailbox uidvalidity stored-uid-validity)
+      (let* ((flags-table (bic--read-flags-table state-data mailbox))
+	     (current-flags (gethash full-uid flags-table))
+	     (need-to-add (cl-set-difference flags-to-add current-flags :test 'string=))
+	     (need-to-remove (cl-intersection current-flags flags-to-remove :test 'string=))
+	     (pending-flags-file (expand-file-name
+				  "pending-flags"
+				  (bic--mailbox-dir state-data mailbox))))
+	(when (or need-to-add need-to-remove)
+	  (with-temp-buffer
+	    (when need-to-add
+	      (insert full-uid "+")
+	      (let ((print-escape-newlines t))
+		(prin1 need-to-add (current-buffer)))
+	      (insert "\n"))
+	    (when need-to-remove
+	      (insert full-uid "-")
+	      (let ((print-escape-newlines t))
+		(prin1 need-to-remove (current-buffer)))
+	      (insert "\n"))
+	    (write-region (point-min) (point-max)
+			  pending-flags-file :append :silent)))
+	(puthash full-uid
+		 ;; Note that the entry in the hash table does not
+		 ;; correspond to what's in the "flags" file.
+		 (cl-adjoin :pending
+			    (append
+			     need-to-add
+			     (cl-set-difference current-flags need-to-remove :test 'string=)))
+		 flags-table)
+	(bic-mailbox--maybe-update-message
+	 (plist-get state-data :address)
+	 mailbox full-uid)))))
 
 (defun bic--date-text (time)
   (pcase-let ((`(,_sec ,_min ,_hour ,day ,month ,year . ,_)
@@ -688,6 +958,9 @@ If there is no such buffer, return nil."
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map special-mode-map)
     (define-key map (kbd "RET") 'bic-mailbox-read-message)
+    (define-key map (kbd "d") 'bic-message-mark-read)
+    (define-key map (kbd "M-u") 'bic-message-mark-unread)
+    (define-key map "!" 'bic-message-mark-flagged)
     map))
 
 (define-derived-mode bic-mailbox-mode special-mode "BIC mailbox"
@@ -803,6 +1076,12 @@ If there is no such buffer, return nil."
 			 bic--current-mailbox
 			 msg)))
 
+(defun bic-mailbox--maybe-update-message (address mailbox full-uid)
+  (pcase (bic-mailbox--find-buffer address mailbox)
+    ((and (pred bufferp) mailbox-buffer)
+     (run-with-idle-timer
+      0.1 nil 'bic-mailbox--update-message mailbox-buffer full-uid))))
+
 (defun bic-mailbox--update-message (buffer full-uid)
   (with-current-buffer buffer
     (pcase (gethash full-uid bic-mailbox--ewoc-nodes-table)
@@ -816,6 +1095,20 @@ If there is no such buffer, return nil."
 
 ;;; Message view
 
+(defvar-local bic-message--full-uid nil
+  "String containing uidvalidity and uid for message displayed in buffer.")
+
+(defvar bic-message-mode-map
+  (let ((map (make-sparse-keymap)))
+    (set-keymap-parent map special-mode-map)
+    ;; XXX: mark as replied, insert body, etc
+    (define-key map "r" 'message-reply)
+    (define-key map "d" 'bic-message-mark-read)
+    (define-key map (kbd "M-u") 'bic-message-mark-unread)
+    (define-key map "!" 'bic-message-mark-flagged)
+    ;; (define-key map (kbd "RET") 'bic-mailbox-read-message)
+    map))
+
 (define-derived-mode bic-message-mode gnus-article-mode "BIC Message"
   "Major mode for messages viewed from `bic'.")
 
@@ -826,6 +1119,7 @@ If there is no such buffer, return nil."
       (bic-message-mode)
       (setq bic--current-account account
 	    bic--current-mailbox mailbox
+	    bic-message--full-uid msg
 	    bic--dir (expand-file-name
 		      mailbox
 		      (expand-file-name
@@ -840,6 +1134,51 @@ If there is no such buffer, return nil."
       (gnus-article-prepare-display))
     (let ((window (display-buffer (current-buffer))))
       (set-window-start window (point-min)))))
+
+(defun bic-message-mark-read ()
+  "Mark the message at point as read.
+If the message is marked as flagged, remove the flag."
+  (interactive)
+  (bic-message-flag '("\\Seen") '("\\Flagged")))
+
+(defun bic-message-mark-unread ()
+  "Mark the message at point as unread.
+If the message is marked as flagged, remove the flag."
+  (interactive)
+  (bic-message-flag () '("\\Seen" "\\Flagged")))
+
+(defun bic-message-mark-flagged ()
+  "Mark the message at point as flagged.
+Also mark it as read."
+  (interactive)
+  (bic-message-flag '("\\Seen" "\\Flagged") ()))
+
+(defun bic-message-flag (flags-to-add flags-to-remove)
+  "Add and remove flags for the message at point."
+  (let ((full-uid (bic--find-message-at-point))
+	(fsm (bic--find-account bic--current-account)))
+    (fsm-send
+     fsm
+     (list :flags bic--current-mailbox full-uid flags-to-add flags-to-remove))))
+
+(defun bic--find-message-at-point ()
+  "Find UID of message at point.
+Assert that `bic--current-account' and `bic--current-mailbox' are set.
+Return the uidvalidity+uid value of the message under point.
+If no message found, signal a `user-error'."
+  (unless (and bic--current-account bic--current-mailbox)
+    (user-error "Not in mailbox or message buffer"))
+  (cond
+   ((local-variable-p 'bic-message--full-uid)
+    bic-message--full-uid)
+   ((local-variable-p 'bic-mailbox--ewoc)
+    (pcase (ewoc-locate bic-mailbox--ewoc (point))
+      (`nil
+       (user-error "No message under point"))
+      (node
+       (ewoc-data node))))
+   (t
+    (user-error "Cannot locate message"))))
 
 (provide 'bic)
 ;;; bic.el ends here
