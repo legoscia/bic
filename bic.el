@@ -38,7 +38,7 @@
   "Settings for the Best IMAP Client."
   :group 'mail)
 
-(defvar bic-active-accounts ())
+(defvar bic-running-accounts ())
 
 (defvar bic-data-directory (locate-user-emacs-file "bic"))
 
@@ -47,14 +47,14 @@
 
 (defun bic (address)
   (interactive "sEmail address: ")
-  (push (start-bic-account address) bic-active-accounts))
+  (push (start-bic-account address) bic-running-accounts))
 
 (defun bic--find-account (account)
   "Find active FSM for ACCOUNT.
 ACCOUNT is a string of the form \"username@server\"."
   (cl-find-if (lambda (state-data)
 		(string= account (plist-get state-data :address)))
-	      bic-active-accounts
+	      bic-running-accounts
 	      :key #'fsm-get-state-data))
 
 (define-state-machine bic-account
@@ -72,7 +72,7 @@ ACCOUNT is a string of the form \"username@server\"."
 
 (define-enter-state bic-account nil
   (fsm state-data)
-  (setq bic-active-accounts (delq fsm bic-active-accounts))
+  (setq bic-running-accounts (delq fsm bic-running-accounts))
   (list state-data nil))
 
 (define-enter-state bic-account :no-data
