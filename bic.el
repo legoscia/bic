@@ -347,7 +347,6 @@ ACCOUNT is a string of the form \"username@server\"."
   (fsm state-data event callback)
   (pcase event
     (`(:list-response ,list-response)
-     (message "Got LIST response: %S" list-response)
      (pcase list-response
        (`(:ok ,_ ,list-data)
 	(bic--handle-list-response state-data list-data)
@@ -363,7 +362,6 @@ ACCOUNT is a string of the form \"username@server\"."
     (`(:select-response ,mailbox-name ,select-response)
      (pcase select-response
        (`(:ok ,_ ,select-data)
-	(message "Got successful SELECT response: %S" select-data)
 	(bic--handle-select-response state-data mailbox-name select-data)
 
 	;; Check if we're doing a task here
