@@ -45,9 +45,31 @@
 (defvar bic-backlog-days 30
   "Messages no more than this old will be fetched.")
 
+(defvar bic-reconnect-interval 5
+  "Attempt to reconnect after this many seconds.")
+
 (defun bic (address)
   (interactive "sEmail address: ")
   (push (start-bic-account address) bic-running-accounts))
+
+(defun bic-deactivate (account)
+  (interactive (list (bic--read-running-account)))
+  (fsm-send (bic--find-account account) :deactivate))
+
+(defun bic-activate (account)
+  (interactive (list (bic--read-running-account)))
+  (fsm-send (bic--find-account account) :activate))
+
+(defun bic--read-running-account ()
+  "Read the name of a running account from the minibuffer."
+  (if (null bic-running-accounts)
+      (user-error "No accounts available")
+    (completing-read "Account: "
+		     (mapcar
+		      (lambda (fsm)
+			(plist-get (fsm-get-state-data fsm) :address))
+		      bic-running-accounts)
+		     nil t)))
 
 (defun bic--find-account (account)
   "Find active FSM for ACCOUNT.
@@ -278,17 +300,19 @@ ACCOUNT is a string of the form \"username@server\"."
   (fsm state-data event _callback)
   (pcase event
     (`((:disconnected ,keyword ,reason) ,_)
-     (message "Initial connection to %s@%s failed: %s (%s)"
-	      (plist-get state-data :username)
-	      (plist-get state-data :server)
-	      reason
-	      keyword)
+     (unless (plist-get state-data :ever-connected)
+       (message "Initial connection to %s@%s failed: %s (%s)"
+		(plist-get state-data :username)
+		(plist-get state-data :server)
+		reason
+		keyword))
      (list :disconnected state-data))
     (`(:authenticated ,_)
      (list :connected state-data))))
 
 (define-enter-state bic-account :connected
   (fsm state-data)
+  (plist-put state-data :ever-connected t)
   ;; Find pending flag changes
   (let* ((default-directory (plist-get state-data :dir))
 	 (pending-flags-files (file-expand-wildcards "*/pending-flags"))
@@ -500,6 +524,14 @@ ACCOUNT is a string of the form \"username@server\"."
 				 (list (list mailbox :pending-flags))))
        (bic--maybe-next-task fsm state-data)))
      (list :connected state-data))
+    (:activate
+     ;; Nothing to do.
+     (list :connected state-data))
+    (:deactivate
+     (plist-put state-data :deactivated t)
+     ;; Ask server to disconnect.
+     (bic-command (plist-get state-data :connection) "LOGOUT" #'ignore)
+     (list :connected state-data))
     (`((:disconnected ,keyword ,reason) ,connection)
      (cond
       ((eq connection (plist-get state-data :connection))
@@ -511,6 +543,14 @@ ACCOUNT is a string of the form \"username@server\"."
        ;; Not ours.
        (list :connected state-data))))))
 
+(define-enter-state bic-account :disconnected
+  (fsm state-data)
+  (unless (plist-get state-data :deactivated)
+    (run-with-timer
+     bic-reconnect-interval nil
+     #'fsm-send fsm :reconnect))
+  (list state-data nil))
+
 (define-state bic-account :disconnected
   (fsm state-data event callback)
   (pcase event
@@ -521,6 +561,18 @@ ACCOUNT is a string of the form \"username@server\"."
      (list :disconnected state-data))
     (`(:flags ,mailbox ,full-uid ,flags-to-add ,flags-to-remove)
      (bic--write-pending-flags mailbox full-uid flags-to-add flags-to-remove state-data)
+     (list :disconnected state-data))
+    (:reconnect
+     (if (plist-get state-data :deactivated)
+	 ;; User asked us not to reconnect.
+	 (list :disconnected state-data)
+       (list :existing state-data)))
+    (:activate
+     (plist-put state-data :deactivated nil)
+     (fsm-send fsm :reconnect)
+     (list :disconnected state-data))
+    (:deactivate
+     (plist-put state-data :deactivated t)
      (list :disconnected state-data))))
 
 (defconst bic-filename-invalid-characters '(?< ?> ?: ?\" ?/ ?\\ ?| ?? ?* ?_)
