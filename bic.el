@@ -1178,6 +1178,8 @@ If there is no such buffer, return nil."
 		      mailbox
 		      (expand-file-name
 		       account bic-data-directory)))
+      (erase-buffer)
+      (remove-overlays)
       ;; XXX: ideally we should use insert-file-contents-literally
       ;; here, but gnus-article-mode gets very confused by our CRLF
       ;; line endings.
