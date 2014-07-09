@@ -900,5 +900,33 @@ destructively, and returns it."
     (_
      (error "Cannot expand literals in %S" sexp))))
 
+(defun bic-format-ranges (ranges)
+  "Format RANGES as a sequence-set.
+RANGES is either a single cons, (START . END), or a list
+where each element is either a number or a (START . END) cons.
+This is the type of value returned by `gnus-compress-sequence'.
+
+All numbers may be either integers or floats.  They will be
+formatted as integers."
+  (cl-flet ((s (number)
+	       (if (integerp number)
+		   (number-to-string number)
+		 (let ((float-string (number-to-string number)))
+		   (substring float-string 0 (cl-position ?. float-string))))))
+    (pcase ranges
+      (`(,(and (pred numberp) start) . ,(and (pred numberp) end))
+       (concat (s start) ":" (s end)))
+      (_
+       (let (parts)
+	 (dolist (range-or-number ranges)
+	   (pcase range-or-number
+	     (`(,(and (pred numberp) start) . ,(and (pred numberp) end))
+	      (push (concat (s start) ":" (s end)) parts))
+	     ((pred numberp)
+	      (push (s range-or-number) parts))
+	     (_
+	      (error "Invalid number or range: %S" range-or-number))))
+	 (mapconcat 'identity (nreverse parts) ","))))))
+
 (provide 'bic-core)
 ;;; bic-core.el ends here
