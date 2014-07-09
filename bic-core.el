@@ -852,6 +852,27 @@ the position beyond the closing double quote."
     (list (apply #'concat (nreverse string-parts))
 	  (1+ i))))
 
+(defun bic-quote-string (string)
+  "Return STRING as an IMAP quoted string.
+The return value includes the surrounding double quotes."
+  (let ((acc (list "\""))
+	(i 0))
+    (while (and i (< i (length string)))
+      (let* ((to-escape (cl-position-if
+			 (lambda (c) (memq c '(?\" ?\\ ?\r ?\n)))
+			 string :start i))
+	     (char (when to-escape (aref string to-escape))))
+	(when (memq char '(?\r ?\n))
+	  ;; You should have sent a literal instead.
+	  (error "Cannot send CRLF as quoted string"))
+	(push (substring string i to-escape) acc)
+	(if (null char)
+	    (setq i nil)
+	  (push (string ?\\ char) acc)
+	  (setq i (1+ to-escape)))))
+    (push "\"" acc)
+    (apply #'concat (nreverse acc))))
+
 (defun bic--expand-literals (sexp)
   "Replace marker pairs with strings in output from `bic--parse-line'.
 Markers are set to point nowhere afterwards.  Modifies SEXP
