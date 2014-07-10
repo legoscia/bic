@@ -1010,6 +1010,7 @@ If there is no such buffer, return nil."
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map special-mode-map)
     (define-key map (kbd "RET") 'bic-mailbox-read-message)
+    (define-key map "x" 'bic-mailbox-hide-read)
     (define-key map (kbd "d") 'bic-message-mark-read)
     (define-key map (kbd "M-u") 'bic-message-mark-unread)
     (define-key map "!" 'bic-message-mark-flagged)
@@ -1018,7 +1019,8 @@ If there is no such buffer, return nil."
 (define-derived-mode bic-mailbox-mode special-mode "BIC mailbox"
   "Major mode for IMAP mailboxes accessed by `bic'."
   (setq header-line-format
-	'(" " bic--current-account " " bic--current-mailbox)))
+	'(" " bic--current-account " " bic--current-mailbox))
+  (setq-local revert-buffer-function #'bic-mailbox-reload))
 
 (defun bic-mailbox--init (account mailbox)
   (setq bic--current-account account
@@ -1027,30 +1029,34 @@ If there is no such buffer, return nil."
 		  mailbox
 		  (expand-file-name
 		   account bic-data-directory)))
-  (let ((inhibit-read-only t)
-	(buffer (current-buffer)))
+  (let ((inhibit-read-only t))
     (erase-buffer)
     (setq bic-mailbox--ewoc
 	  (ewoc-create #'bic-mailbox--pp))
     (setq bic-mailbox--ewoc-nodes-table
 	  (make-hash-table :test 'equal))
+    (bic-mailbox--load-messages)))
 
-    (let* ((uidvalidity-file (expand-file-name "uidvalidity" bic--dir))
-	   (uidvalidity (with-temp-buffer
-			  (insert-file-contents-literally uidvalidity-file)
-			  (buffer-string)))
-	   (messages (directory-files bic--dir nil
-				      (concat "^" uidvalidity "-[0-9]+$"))))
-      (fsm-send (bic--find-account account) (list :get-mailbox-tables mailbox)
-		(lambda (tables)
-		  (with-current-buffer buffer
-		    (setq bic-mailbox--hashtable (car tables))
-		    (setq bic-mailbox--flags-table (cadr tables))
-		    (let ((inhibit-read-only t))
-		      (dolist (msg messages)
-			(puthash
-			 msg (ewoc-enter-last bic-mailbox--ewoc msg)
-			 bic-mailbox--ewoc-nodes-table)))))))))
+(defun bic-mailbox--load-messages ()
+  (let* ((uidvalidity-file (expand-file-name "uidvalidity" bic--dir))
+	 (uidvalidity (with-temp-buffer
+			(insert-file-contents-literally uidvalidity-file)
+			(buffer-string)))
+	 (messages (directory-files bic--dir nil
+				    (concat "^" uidvalidity "-[0-9]+$")))
+	 (buffer (current-buffer)))
+    (fsm-send
+     (bic--find-account bic--current-account)
+     (list :get-mailbox-tables bic--current-mailbox)
+     (lambda (tables)
+       (with-current-buffer buffer
+	 (setq bic-mailbox--hashtable (car tables))
+	 (setq bic-mailbox--flags-table (cadr tables))
+	 (let ((inhibit-read-only t))
+	   (dolist (msg messages)
+	     (puthash
+	      msg (ewoc-enter-last bic-mailbox--ewoc msg)
+	      bic-mailbox--ewoc-nodes-table))))))))
 
 (defun bic-mailbox--pp (msg)
   (let ((envelope (gethash msg bic-mailbox--hashtable))
@@ -1117,6 +1123,29 @@ If there is no such buffer, return nil."
 	 (t
 	  ;; more than a year ago, or in the future: show YYYY-MM-DD
 	  (format-time-string "%F" parsed-date)))))))
+
+(defun bic-mailbox-hide-read ()
+  "Hide messages that are marked as read, but not flagged."
+  (interactive)
+  (unless (derived-mode-p 'bic-mailbox-mode)
+    (user-error "Not a mailbox buffer"))
+  (ewoc-filter
+   bic-mailbox--ewoc
+   (lambda (full-uid)
+     (let* ((flags (gethash full-uid bic-mailbox--flags-table)))
+       (or (member "\\Flagged" flags)
+	   (not (member "\\Seen" flags)))))))
+
+(defun bic-mailbox-reload (&optional _ignore-auto _noconfirm)
+  "Reload messages for the current mailbox buffer."
+  (interactive)
+  (unless (derived-mode-p 'bic-mailbox-mode)
+    (user-error "Not a mailbox buffer"))
+  (let ((inhibit-read-only t))
+    ;; First, remove all elements from the ewoc.
+    (ewoc-filter bic-mailbox--ewoc #'ignore)
+    ;; Then reload.
+    (bic-mailbox--load-messages)))
 
 (defun bic-mailbox-read-message ()
   "Open the message under point."
