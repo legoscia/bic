@@ -389,14 +389,17 @@ ACCOUNT is a string of the form \"username@server\"."
 	  ;; TODO: check for mailbox view
 	  (let* ((uid-entry (member "UID" msg-att))
 		 (uid (cadr uid-entry))
-		 (full-uid (concat uidvalidity "-" uid))
+		 (full-uid (when uid-entry (concat uidvalidity "-" uid)))
 		 (body-entry (member "BODY" msg-att))
 		 (envelope-entry (member "ENVELOPE" msg-att))
 		 (flags-entry (member "FLAGS" msg-att)))
 
 	    (let ((existing-flags (gethash full-uid flags-table :not-found))
 		  (new-flags (cadr flags-entry)))
-	      (unless (equal existing-flags new-flags)
+	      ;; TODO: do something clever if we don't know the UID
+	      (unless (or (null full-uid)
+			  (null flags-entry)
+			  (equal existing-flags new-flags))
 		(puthash full-uid
 			 (cadr flags-entry)
 			 flags-table)
@@ -443,9 +446,10 @@ ACCOUNT is a string of the form \"username@server\"."
 	       ;; TODO: only warn if message absent in overview?
 	       (message "Missing BODY in FETCH response: %S" other)))
 
-	    (bic-mailbox--maybe-update-message
-	     (plist-get state-data :address)
-	     selected-mailbox full-uid)))
+	    (unless (null full-uid)
+	      (bic-mailbox--maybe-update-message
+	       (plist-get state-data :address)
+	       selected-mailbox full-uid))))
 	 (other
 	  (message "Unexpected response to FETCH request: %S" other)))
        (list :connected state-data)))
