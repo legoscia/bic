@@ -777,7 +777,7 @@ It also includes underscore, which is used as an escape character.")
      (bic-command
       (plist-get state-data :connection)
       ;; XXX: SEARCH or UID SEARCH?
-      (concat "UID SEARCH OR UNSEEN SINCE "
+      (concat "UID SEARCH OR OR UNSEEN FLAGGED SINCE "
 	      (bic--date-text
 	       (time-subtract (current-time)
 			      (days-to-time bic-backlog-days))))
