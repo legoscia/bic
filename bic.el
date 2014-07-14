@@ -298,17 +298,18 @@ ACCOUNT is a string of the form \"username@server\"."
 
 (define-state bic-account :existing
   (fsm state-data event _callback)
-  (pcase event
-    (`((:disconnected ,keyword ,reason) ,_)
-     (unless (plist-get state-data :ever-connected)
-       (message "Initial connection to %s@%s failed: %s (%s)"
-		(plist-get state-data :username)
-		(plist-get state-data :server)
-		reason
-		keyword))
-     (list :disconnected state-data))
-    (`(:authenticated ,_)
-     (list :connected state-data))))
+  (let ((our-connection (plist-get state-data :connection)))
+    (pcase event
+      (`((:disconnected ,keyword ,reason) ,(pred (eq our-connection)))
+       (unless (plist-get state-data :ever-connected)
+	 (message "Initial connection to %s@%s failed: %s (%s)"
+		  (plist-get state-data :username)
+		  (plist-get state-data :server)
+		  reason
+		  keyword))
+       (list :disconnected state-data))
+      (`(:authenticated ,(pred (eq our-connection)))
+       (list :connected state-data)))))
 
 (define-enter-state bic-account :connected
   (fsm state-data)
