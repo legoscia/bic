@@ -110,7 +110,7 @@ proceed."
      (list state-data nil))))
 
 (define-state bic-connection :connecting
-  (fsm state-data event callback)
+  (_fsm state-data event _callback)
   (pcase event
     (`(:connection-failed ,e)
      ;; from enter-state-function
@@ -154,7 +154,7 @@ proceed."
      (list :connecting state-data nil))))
 
 (define-state bic-connection :wait-for-greeting
-  (fsm state-data event callback)
+  (fsm state-data event _callback)
   (pcase event
     (`(:filter ,process ,data)
      (bic--filter process data fsm)
@@ -180,7 +180,7 @@ proceed."
   (list state-data nil))
 
 (define-state bic-connection :wait-for-capabilities
-  (fsm state-data event callback)
+  (fsm state-data event _callback)
   (pcase event
     (`(:filter ,process ,data)
      (bic--filter process data fsm)
@@ -273,7 +273,7 @@ proceed."
     (list :authenticated state-data))))
 
 (define-state bic-connection :wait-for-starttls-response
-  (fsm state-data event callback)
+  (fsm state-data event _callback)
   (pcase event
     (`(:filter ,process ,data)
      (bic--filter process data fsm)
@@ -528,7 +528,7 @@ include the leading \"*\" tag."
   (list nil nil))
 
 (define-state bic-connection nil
-  (fsm state-data event callback)
+  (_fsm state-data _event _callback)
   ;; Ignore all events
   (list nil state-data))
 
