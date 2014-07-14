@@ -1116,7 +1116,7 @@ If there is no such buffer, return nil."
     (if (null date)
 	;; cannot parse
 	"**********"
-      (let ((days (- (time-to-days parsed-date) (time-to-days (current-time)))))
+      (let ((days (- (time-to-days (current-time)) (time-to-days parsed-date))))
 	(cond
 	 ((= days 0)
 	  ;; same day: show time
