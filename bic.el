@@ -410,7 +410,7 @@ ACCOUNT is a string of the form \"username@server\"."
 		(with-temp-buffer
 		  (insert full-uid " ")
 		  (let ((print-escape-newlines t))
-		    (prin1 (bic--expand-literals new-flags)
+		    (prin1 (bic-expand-literals new-flags)
 			   (current-buffer)))
 		  (insert "\n")
 		  (write-region (point-min) (point-max)
@@ -429,7 +429,7 @@ ACCOUNT is a string of the form \"username@server\"."
 		  nil :silent))
 	       (set-marker start-marker nil)
 	       (set-marker end-marker nil)
-	       (let ((envelope-data (bic--expand-literals (cadr envelope-entry))))
+	       (let ((envelope-data (bic-expand-literals (cadr envelope-entry))))
 		 ;; TODO: avoid duplicates
 		 (with-temp-buffer
 		   (insert full-uid " ")

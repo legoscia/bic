@@ -894,7 +894,7 @@ The return value includes the surrounding double quotes."
     (push "\"" acc)
     (apply #'concat (nreverse acc))))
 
-(defun bic--expand-literals (sexp)
+(defun bic-expand-literals (sexp)
   "Replace marker pairs with strings in output from `bic--parse-line'.
 Markers are set to point nowhere afterwards.  Modifies SEXP
 destructively, and returns it."
@@ -910,8 +910,8 @@ destructively, and returns it."
 	 (set-marker start-marker nil)
 	 (set-marker end-marker nil))))
     ((pred consp)
-     (setf (car sexp) (bic--expand-literals (car sexp)))
-     (setf (cdr sexp) (bic--expand-literals (cdr sexp)))
+     (setf (car sexp) (bic-expand-literals (car sexp)))
+     (setf (cdr sexp) (bic-expand-literals (cdr sexp)))
      sexp)
     ((pred markerp)
      ;; This should have been caught in the first case.
