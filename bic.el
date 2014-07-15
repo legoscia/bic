@@ -470,64 +470,13 @@ ACCOUNT is a string of the form \"username@server\"."
      (list :connected state-data))
     ((and `(:flags ,mailbox ,full-uid ,flags-to-add ,flags-to-remove)
 	  (let `(,uidvalidity ,uid) (split-string full-uid "-")))
-     (cond
-      ((string= mailbox (plist-get state-data :selected))
-       ;; We want to change flags in the mailbox that's currently
-       ;; selected - that's easy.
-       (if (not (string= uidvalidity
-			 (plist-get (cdr
-				     (assoc mailbox (plist-get state-data :mailboxes)))
-				    :uidvalidity)))
-	   ;; TODO: handle this somehow
-	   (warn "Cannot change flags in %s; uidvalidity mismatch (%s vs %s)"
-		 mailbox uidvalidity (plist-get (cdr
-						 (assoc mailbox (plist-get state-data :mailboxes)))
-						:uidvalidity))
-	 (let* ((current-flags (gethash full-uid (bic--read-flags-table state-data mailbox)))
-		(need-to-add (cl-set-difference flags-to-add current-flags :test 'string=))
-		(need-to-remove (cl-intersection current-flags flags-to-remove :test 'string=)))
-	   ;; TODO: remove duplication
-	   ;; TODO: handle untagged responses generally, not per request
-	   (when need-to-add
-	     (bic-command
-	      (plist-get state-data :connection)
-	      (concat "UID STORE " uid " +FLAGS ("
-		      (mapconcat #'identity need-to-add " ")
-		      ")")
-	      (lambda (store-response)
-		(unless (eq (car store-response) :ok)
-		  (message "Couldn't change flags: %s"
-			   (plist-get (cl-second store-response) :text))))
-	      (list
-	       (list 1 "FETCH"
-		     (lambda (one-fetch-response)
-		       (fsm-send fsm (list :early-fetch-response
-					   mailbox
-					   one-fetch-response
-					   uidvalidity)))))))
-	   (when need-to-remove
-	     (bic-command
-	      (plist-get state-data :connection)
-	      (concat "UID STORE " uid " -FLAGS ("
-		      (mapconcat #'identity need-to-remove " ")
-		      ")")
-	      (lambda (store-response)
-		(unless (eq (car store-response) :ok)
-		  (message "Couldn't change flags: %s"
-			   (plist-get (cl-second store-response) :text))))
-	      (list
-	       (list 1 "FETCH"
-		     (lambda (one-fetch-response)
-		       (fsm-send fsm (list :early-fetch-response
-					   mailbox
-					   one-fetch-response
-					   uidvalidity))))))))))
-      (t
-       (bic--write-pending-flags mailbox full-uid flags-to-add flags-to-remove state-data)
-       (plist-put state-data
-		  :tasks (append (plist-get state-data :tasks)
-				 (list (list mailbox :pending-flags))))
-       (bic--maybe-next-task fsm state-data)))
+     (bic--write-pending-flags mailbox full-uid flags-to-add flags-to-remove state-data)
+     (let ((tasks (plist-get state-data :tasks))
+	   (new-task (list mailbox :pending-flags)))
+       (unless (member new-task tasks)
+	 (plist-put state-data
+		    :tasks (append tasks (list new-task)))))
+     (bic--maybe-next-task fsm state-data)
      (list :connected state-data))
     (:activate
      ;; Nothing to do.
