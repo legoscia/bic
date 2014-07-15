@@ -805,7 +805,8 @@ It also includes underscore, which is used as an escape character.")
 	     (cl-remove-if
 	      (lambda (uid) (gethash (concat uidvalidity "-" uid) overview-table))
 	      search-results)))
-       (when filtered-search-results
+       (if (null filtered-search-results)
+	   (fsm-send fsm (list :task-finished task))
 	 (let* ((count (length filtered-search-results))
 		(progress
 		 (make-progress-reporter
