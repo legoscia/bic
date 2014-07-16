@@ -1050,6 +1050,8 @@ If there is no such buffer, return nil."
 	     ?!)
 	    ((member "\\Seen" flags)
 	     ?R)
+	    ((member "\\Recent" flags)
+	     ?.)
 	    (t
 	     ?\s))
 	   (cond
