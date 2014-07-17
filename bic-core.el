@@ -949,5 +949,11 @@ formatted as integers."
 	      (error "Invalid number or range: %S" range-or-number))))
 	 (mapconcat 'identity (nreverse parts) ","))))))
 
+(defun bic-connection--has-capability (capability connection)
+  "Return true if CONNECTION reported CAPABILITY.
+Authentication methods cannot be queried."
+  (member capability (plist-get (fsm-get-state-data connection)
+				:capabilities)))
+
 (provide 'bic-core)
 ;;; bic-core.el ends here

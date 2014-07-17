@@ -338,6 +338,14 @@ ACCOUNT is a string of the form \"username@server\"."
 					 download-messages-tasks))
     (plist-put state-data :current-task nil))
 
+  ;; If the server supports ID, ask for its identity.  Ignore the
+  ;; answer; it's just for the transcript.
+  (when (bic-connection--has-capability "ID" (plist-get state-data :connection))
+    (bic-command (plist-get state-data :connection)
+		 ;; We're anonymous ourselves so far.
+		 "ID NIL"
+		 #'ignore))
+
   ;; Get list of mailboxes
   (bic-command (plist-get state-data :connection)
 	       "LIST \"\" \"*\""
