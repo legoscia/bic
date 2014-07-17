@@ -331,7 +331,8 @@ ACCOUNT is a string of the form \"username@server\"."
 				      mailboxes-with-pending-flags))
 	 (download-messages-tasks
 	  ;; TODO: do something clever here.
-	  (list (list "INBOX" :download-messages))))
+	  (list (list "INBOX" :download-flags)
+		(list "INBOX" :download-messages))))
     ;; NB: Overwriting any existing tasks from previous connections.
     (plist-put state-data :tasks (append pending-flags-tasks
 					 download-messages-tasks))
@@ -400,7 +401,11 @@ ACCOUNT is a string of the form \"username@server\"."
 	      ;; TODO: do something clever if we don't know the UID
 	      (unless (or (null full-uid)
 			  (null flags-entry)
-			  (equal existing-flags new-flags))
+			  (equal existing-flags new-flags)
+			  ;; Don't save flags for messages we don't
+			  ;; know anything else about.
+			  (and (null envelope-entry)
+			       (null (gethash full-uid overview-table))))
 		(puthash full-uid
 			 (cadr flags-entry)
 			 flags-table)
@@ -733,8 +738,57 @@ It also includes underscore, which is used as an escape character.")
 			      (days-to-time bic-backlog-days))))
       (lambda (search-response)
 	(bic--handle-search-response fsm state-data task search-response))))
+    (`(,mailbox :download-flags)
+     (cl-assert (string= mailbox (plist-get state-data :selected)))
+     ;; TODO: use modseq if available
+     (let* ((uidvalidity
+	     (plist-get (cdr (assoc mailbox (plist-get state-data :mailboxes)))
+			:uidvalidity))
+	    (prefix (concat uidvalidity "-"))
+	    (overview-table (bic--read-overview state-data mailbox))
+	    uids)
+       (maphash
+	(lambda (full-uid _overview-data)
+	  (when (string-prefix-p prefix full-uid)
+	    (let ((uid (substring full-uid (1+ (cl-position ?- full-uid)))))
+	      (push uid uids))))
+	overview-table)
+       (if uids
+	   (bic-command
+	    (plist-get state-data :connection)
+	    (concat "UID FETCH "
+		    (bic-format-ranges
+		     (gnus-compress-sequence
+		      (sort (mapcar 'string-to-number uids) '<)
+		      t))
+		    " FLAGS")
+	    (lambda (fetch-response)
+	      (pcase fetch-response
+		(`(:ok ,_ ,fetched-messages)
+		 ;; TODO: any message we didn't get a response for was
+		 ;; deleted.
+		 (when fetched-messages
+		   (message "Extra response lines for FETCH: %S" fetched-messages)))
+		(other
+		 (warn "FETCH request failed: %S" other)))
+	      (fsm-send fsm (list :task-finished task)))
+	    (list
+	     (list 1 "FETCH"
+		   (lambda (one-fetch-response)
+		     (fsm-send fsm (list :early-fetch-response
+					 mailbox
+					 one-fetch-response
+					 uidvalidity))))))
+	 ;; Nothing to request - we're done.
+	 (fsm-send fsm (list :task-finished task)))))
     (_
      (warn "Unknown task %S" task))))
+
+(defun bic--numeric-string-lessp (s1 s2)
+  (cond ((< (length s1) (length s2)) t)
+	((> (length s1) (length s2)) nil)
+	((string= s1 s2) nil)
+	(t (string-lessp s1 s2))))
 
 (defun bic--handle-search-response (fsm state-data task search-response)
   ;; Handle search response by fetching the body of all messages that
