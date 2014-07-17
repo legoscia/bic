@@ -989,7 +989,7 @@ If there is no such buffer, return nil."
     (setq bic-mailbox--ewoc
 	  (ewoc-create #'bic-mailbox--pp))
     (setq bic-mailbox--ewoc-nodes-table
-	  (make-hash-table :test 'equal))
+	  (make-hash-table :test 'equal :weakness 'value))
     (bic-mailbox--load-messages)))
 
 (defun bic-mailbox--load-messages ()
@@ -1125,11 +1125,13 @@ If there is no such buffer, return nil."
     (pcase (gethash full-uid bic-mailbox--ewoc-nodes-table)
       (`nil
        ;; Not found; add to end of buffer.
+       ;; TODO: respect existing restrictions, such as "only unread"
        (puthash
 	full-uid (ewoc-enter-last bic-mailbox--ewoc full-uid)
 	bic-mailbox--ewoc-nodes-table))
       (node
-       (ewoc-invalidate bic-mailbox--ewoc node)))))
+       (when (ewoc-location node)
+	 (ewoc-invalidate bic-mailbox--ewoc node))))))
 
 ;;; Message view
 
