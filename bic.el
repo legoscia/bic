@@ -1205,6 +1205,7 @@ If there is no such buffer, return nil."
     (set-keymap-parent map special-mode-map)
     ;; XXX: mark as replied, insert body, etc
     (define-key map "r" 'message-reply)
+    (define-key map "f" 'message-wide-reply)
     (define-key map "d" 'bic-message-mark-read)
     (define-key map (kbd "M-u") 'bic-message-mark-unread)
     (define-key map "!" 'bic-message-mark-flagged)
