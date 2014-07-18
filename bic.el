@@ -458,7 +458,8 @@ ACCOUNT is a string of the form \"username@server\"."
 	       (message "Unexpected BODY in FETCH response: %S" other))
 	      (other
 	       ;; TODO: only warn if message absent in overview?
-	       (message "Missing BODY in FETCH response: %S" other)))
+	       ;; (message "Missing BODY in FETCH response: %S" other)
+	       ))
 
 	    (unless (null full-uid)
 	      (bic-mailbox--maybe-update-message
