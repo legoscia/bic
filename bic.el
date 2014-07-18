@@ -600,56 +600,86 @@ It also includes underscore, which is used as an escape character.")
     (plist-put state-data :mailboxes (mapcar #'list mailboxes))))
 
 (defun bic--handle-select-response (state-data mailbox-name select-data)
-  (let ((uidvalidity-entry
-	 (cl-find-if
-	  (lambda (x)
-	    (and (eq (car-safe x) :ok)
-		 (string= "UIDVALIDITY"
-			  (plist-get (cdr x) :code))))
-	  select-data)))
-    (if uidvalidity-entry
-	(let ((uidvalidity-file
-	       (expand-file-name
-		"uidvalidity"
-		(bic--mailbox-dir state-data mailbox-name)))
-	      (uidvalidity (plist-get (cdr uidvalidity-entry) :data))
-	      (mailbox-entry (assoc mailbox-name (plist-get state-data :mailboxes))))
-	  (if (null mailbox-entry)
+  (cl-flet ((find-entry (type)
+			(cl-find-if
+			 (lambda (x)
+			   (and (eq (car-safe x) :ok)
+				(string= type (plist-get (cdr x) :code))))
+			 select-data)))
+    (let ((dir (bic--mailbox-dir state-data mailbox-name))
+	  (uidvalidity-entry (find-entry "UIDVALIDITY"))
+	  (highestmodseq-entry (find-entry "HIGHESTMODSEQ"))
+	  (nomodseq-entry (find-entry "NOMODSEQ")))
+      (if uidvalidity-entry
+	  (let ((uidvalidity-file (expand-file-name "uidvalidity" dir))
+		(modseq-file (expand-file-name "modseq" dir))
+		(uidvalidity (plist-get (cdr uidvalidity-entry) :data))
+		(mailbox-entry (assoc mailbox-name (plist-get state-data :mailboxes))))
+	    (when (null mailbox-entry)
 	      (warn "Selecting unknown mailbox `%s'" mailbox-name)
+	      (setq mailbox-entry (list mailbox-name))
+	      (plist-put state-data :mailboxes
+			 (cons mailbox-entry (plist-get state-data :mailboxes))))
 	    (setf (cdr mailbox-entry)
-		  (plist-put (cdr mailbox-entry) :uidvalidity uidvalidity)))
-	  (if (file-exists-p uidvalidity-file)
+		  (plist-put (cdr mailbox-entry) :uidvalidity uidvalidity))
+	    (if (file-exists-p uidvalidity-file)
+		(with-temp-buffer
+		  (insert-file-contents-literally uidvalidity-file)
+		  (if (string= (buffer-string) uidvalidity)
+		      (message "UIDVALIDITY match")
+		    ;; TODO
+		    (warn "UIDVALIDITY mismatch: %s vs %s"
+			  (buffer-string) uidvalidity)))
+	      (message "Fresh UIDVALIDITY value: %S" uidvalidity-entry)
 	      (with-temp-buffer
-		(insert-file-contents-literally uidvalidity-file)
-		(if (string= (buffer-string) uidvalidity)
-		    (message "UIDVALIDITY match")
-		  ;; TODO
-		  (warn "UIDVALIDITY mismatch: %s vs %s"
-			(buffer-string) uidvalidity)))
-	    (message "Fresh UIDVALIDITY value: %S" uidvalidity-entry)
-	    (with-temp-buffer
-	      (insert uidvalidity)
-	      (write-region (point-min) (point-max) uidvalidity-file)))
+		(insert uidvalidity)
+		(write-region (point-min) (point-max) uidvalidity-file)))
+	    (cond
+	     (highestmodseq-entry
+	      (let ((old-modseq
+		     (when (file-exists-p modseq-file)
+		       (with-temp-buffer
+			 (insert-file-contents-literally modseq-file)
+			 (split-string (buffer-string) "-"))))
+		    (new-modseq (plist-get (cdr highestmodseq-entry) :data)))
+		(plist-put (cdr mailbox-entry) :our-modseq
+			   (when (and old-modseq
+				      (string= (car old-modseq) uidvalidity))
+			     (cadr old-modseq)))
+		(plist-put (cdr mailbox-entry) :server-modseq new-modseq)))
+	     ((or nomodseq-entry
+		  (not (bic-connection--has-capability
+			"CONDSTORE" (plist-get state-data :connection))))
+	      (when (file-exists-p modseq-file)
+		(delete-file modseq-file))
+	      (plist-put (cdr mailbox-entry) :our-modseq nil)
+	      (plist-put (cdr mailbox-entry) :server-modseq nil))
+	     (t
+	      (warn "Neither HIGHESTMODSEQ nor NOMODSEQ reported for mailbox %s of %s"
+		    mailbox-name (plist-get state-data :address))))
 
-	  (bic--read-flags-table state-data mailbox-name)
-	  (bic--read-overview state-data mailbox-name))
-      (warn "Missing UIDVALIDITY!  This is not good.")))
+	    (bic--read-flags-table state-data mailbox-name)
+	    (bic--read-overview state-data mailbox-name))
+	(warn "Missing UIDVALIDITY!  This is not good.")))
 
-  (plist-put state-data :selected mailbox-name))
+    (plist-put state-data :selected mailbox-name)))
 
 (defun bic--maybe-next-task (fsm state-data)
   (unless (plist-get state-data :current-task)
     (let* ((tasks (plist-get state-data :tasks))
 	   (task (pop tasks))
-	   (mailbox (car task)))
+	   (mailbox (car task))
+	   (c (plist-get state-data :connection)))
       (when task
 	(plist-put state-data :current-task task)
 	(plist-put state-data :tasks tasks)
 	(if (string= mailbox (plist-get state-data :selected))
 	    (bic--do-task fsm state-data task)
 	  (bic-command
-	   (plist-get state-data :connection)
-	   (concat "SELECT " (bic-quote-string mailbox))
+	   c
+	   (concat "SELECT " (bic-quote-string mailbox)
+		   (when (bic-connection--has-capability "CONDSTORE" c)
+		     " (CONDSTORE)"))
 	   (lambda (select-response)
 	     (fsm-send fsm (list :select-response mailbox select-response)))))))))
 
@@ -748,10 +778,13 @@ It also includes underscore, which is used as an escape character.")
 	(bic--handle-search-response fsm state-data task search-response))))
     (`(,mailbox :download-flags)
      (cl-assert (string= mailbox (plist-get state-data :selected)))
-     ;; TODO: use modseq if available
-     (let* ((uidvalidity
-	     (plist-get (cdr (assoc mailbox (plist-get state-data :mailboxes)))
-			:uidvalidity))
+     (let* ((connection (plist-get state-data :connection))
+	    (mailbox-plist
+	     (cdr (assoc mailbox (plist-get state-data :mailboxes))))
+	    (uidvalidity (plist-get mailbox-plist :uidvalidity))
+	    (our-modseq (plist-get mailbox-plist :our-modseq))
+	    (server-modseq (plist-get mailbox-plist :server-modseq))
+	    (highest-modseq our-modseq)
 	    (prefix (concat uidvalidity "-"))
 	    (overview-table (bic--read-overview state-data mailbox))
 	    uids)
@@ -761,28 +794,64 @@ It also includes underscore, which is used as an escape character.")
 	    (let ((uid (substring full-uid (1+ (cl-position ?- full-uid)))))
 	      (push uid uids))))
 	overview-table)
-       (if uids
+       ;; We can skip requesting flags for already downloaded messages
+       ;; if there aren't any downloaded messages, or if the server
+       ;; supports CONDSTORE, and the MODSEQ values match.  NB: If we
+       ;; don't send a FETCH request, we need to signal :task-finished
+       ;; immediately.
+       (if (and uids
+		(or (null server-modseq)
+		    (null our-modseq)
+		    (bic--numeric-string-lessp our-modseq server-modseq)))
 	   (bic-command
-	    (plist-get state-data :connection)
+	    connection
 	    (concat "UID FETCH "
 		    (bic-format-ranges
 		     (gnus-compress-sequence
 		      (sort (mapcar 'string-to-number uids) '<)
 		      t))
-		    " FLAGS")
+		    (cond
+		     ((bic-connection--has-capability "CONDSTORE" connection)
+		      (if our-modseq
+			  (concat " FLAGS (CHANGEDSINCE " our-modseq ")")
+			" (FLAGS MODSEQ)"))
+		     (t
+		      " FLAGS")))
 	    (lambda (fetch-response)
 	      (pcase fetch-response
-		(`(:ok ,_ ,fetched-messages)
+		(`(:ok ,resp ,fetched-messages)
 		 ;; TODO: any message we didn't get a response for was
 		 ;; deleted.
 		 (when fetched-messages
-		   (message "Extra response lines for FETCH: %S" fetched-messages)))
+		   (message "Extra response lines for FETCH: %S" fetched-messages))
+		 ;; Check for HIGHESTMODSEQ response code.
+		 ;; If none, use highest MODSEQ seen in FETCH responses.
+		 (when (string= (plist-get resp :code) "HIGHESTMODSEQ")
+		   (setq highest-modseq (plist-get resp :data)))
+		 (plist-put mailbox-plist :our-modseq highest-modseq)
+		 (when highest-modseq
+		   (let* ((dir (bic--mailbox-dir state-data mailbox))
+			  (modseq-file (expand-file-name "modseq" dir)))
+		     (with-temp-buffer
+		       (insert uidvalidity "-" highest-modseq)
+		       (write-region (point-min) (point-max) modseq-file
+				     nil :silent)))))
 		(other
 		 (warn "FETCH request failed: %S" other)))
 	      (fsm-send fsm (list :task-finished task)))
 	    (list
 	     (list 1 "FETCH"
 		   (lambda (one-fetch-response)
+		     ;; If the FETCH response contains a MODSEQ item,
+		     ;; remember the highest one.
+		     (pcase one-fetch-response
+		       (`(,_ "FETCH" ,msg-att)
+			(pcase (member "MODSEQ" msg-att)
+			  (`("MODSEQ" (,msg-modseq) . ,_)
+			   (when (or (null highest-modseq)
+				     (bic--numeric-string-lessp
+				      highest-modseq msg-modseq))
+			     (setq highest-modseq msg-modseq))))))
 		     (fsm-send fsm (list :early-fetch-response
 					 mailbox
 					 one-fetch-response
