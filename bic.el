@@ -740,7 +740,6 @@ It also includes underscore, which is used as an escape character.")
      (cl-assert (string= mailbox (plist-get state-data :selected)))
      (bic-command
       (plist-get state-data :connection)
-      ;; XXX: SEARCH or UID SEARCH?
       (concat "UID SEARCH OR OR UNSEEN FLAGGED SINCE "
 	      (bic--date-text
 	       (time-subtract (current-time)
@@ -828,7 +827,6 @@ It also includes underscore, which is used as an escape character.")
 		(n 0))
 	   ;; These should be UIDs, since they are a response to a UID
 	   ;; SEARCH command.
-	   ;; XXX: use plain search and plain fetch instead?
 	   (bic-command
 	    (plist-get state-data :connection)
 	    (concat "UID FETCH "
