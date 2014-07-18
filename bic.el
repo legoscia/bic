@@ -830,7 +830,10 @@ It also includes underscore, which is used as an escape character.")
 	   (bic-command
 	    (plist-get state-data :connection)
 	    (concat "UID FETCH "
-		    (mapconcat #'identity filtered-search-results ",")
+		    (bic-format-ranges
+		     (gnus-compress-sequence
+		      (sort (mapcar 'string-to-number filtered-search-results) '<)
+		      t))
 		    ;; TODO: Is "BODY.PEEK[]" the right choice?
 		    " (ENVELOPE INTERNALDATE FLAGS BODY.PEEK[])")
 	    (lambda (fetch-response)
