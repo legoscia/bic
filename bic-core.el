@@ -99,6 +99,7 @@ proceed."
 				   (:plaintls 993)))
 		    :coding 'binary
 		    :nowait t
+		    :keepalive t
 		    :filter (fsm-make-filter fsm)
 		    :sentinel (fsm-make-sentinel fsm))))
 	(buffer-disable-undo buffer)
