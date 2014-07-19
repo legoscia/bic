@@ -832,7 +832,7 @@ VALUE must be greater than any marker previously issued."
 ;;;                   atom [SP 1*<any TEXT-CHAR except "]">]
   ;; TODO: find right amount of greediness.  Currently, we assume that
   ;; 'text' does not contain a right square bracket.
-  (if (string-match "\\[\\([^]\s]+\\)\\(?: \\([^]]*\\)\\)?\\] \\(.*\\)" resp-text)
+  (if (string-match "\\[\\([^]\s]+\\)\\(?: \\([^]]*\\)\\)?\\]\\(?: \\(.*\\)\\)?" resp-text)
       (let ((resp-text-code (match-string 1 resp-text))
 	    (resp-text-data (match-string 2 resp-text))
 	    (text (match-string 3 resp-text)))
