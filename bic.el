@@ -1080,7 +1080,8 @@ It also includes underscore, which is used as an escape character.")
 	  (account (completing-read "IMAP account: " accounts))
 	  (mailboxes (directory-files (expand-file-name account bic-data-directory) nil "[^.]"))
 	  ;; XXX: unsanitize name
-	  (mailbox (completing-read "Mailbox: " mailboxes)))
+	  (mailbox (completing-read "Mailbox: "
+				    (mapcar #'bic--unsanitize-mailbox-name mailboxes))))
      (list account mailbox)))
   (let ((buffer-name (concat mailbox "-" account)))
     (with-current-buffer (get-buffer-create buffer-name)
@@ -1113,8 +1114,9 @@ If there is no such buffer, return nil."
 (defun bic-mailbox--init (account mailbox)
   (setq bic--current-account account
 	bic--current-mailbox mailbox
+	;; TODO: use bic--mailbox-dir
 	bic--dir (expand-file-name
-		  mailbox
+		  (bic--sanitize-mailbox-name mailbox)
 		  (expand-file-name
 		   account bic-data-directory)))
   (let ((inhibit-read-only t))
@@ -1295,7 +1297,8 @@ If there is no such buffer, return nil."
 	    bic--current-mailbox mailbox
 	    bic-message--full-uid msg
 	    bic--dir (expand-file-name
-		      mailbox
+		      ;; TODO: use bic--mailbox-dir
+		      (bic--sanitize-mailbox-name mailbox)
 		      (expand-file-name
 		       account bic-data-directory)))
       (erase-buffer)
