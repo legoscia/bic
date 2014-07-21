@@ -1290,9 +1290,12 @@ If there is no such buffer, return nil."
 
 (defun bic-message-display (account mailbox msg)
   (with-current-buffer (get-buffer-create "*BIC-Message*")
-    (let ((inhibit-read-only t)
-	  (gnus-summary-buffer (current-buffer))) ;; Don't ask :(
+    (let ((inhibit-read-only t))
       (bic-message-mode)
+      ;; Don't ask :(
+      (setq-local gnus-summary-buffer
+		  (or (bic-mailbox--find-buffer account mailbox)
+		      (current-buffer)))
       (setq bic--current-account account
 	    bic--current-mailbox mailbox
 	    bic-message--full-uid msg
