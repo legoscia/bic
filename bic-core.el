@@ -328,8 +328,20 @@ proceed."
 (define-enter-state bic-connection :sasl-auth
   (fsm state-data)
   (let* ((client (plist-get state-data :sasl-client))
-	 (mechanism (sasl-client-mechanism client)))
-    (bic--send fsm (concat "auth AUTHENTICATE " (sasl-mechanism-name mechanism) "\r\n")))
+	 (mechanism (sasl-client-mechanism client))
+	 (step (plist-get state-data :sasl-step)))
+    (bic--send
+     fsm
+     (concat "auth AUTHENTICATE " (sasl-mechanism-name mechanism)
+	     (when (and (member "SASL-IR" (plist-get state-data :capabilities))
+			(sasl-step-data step))
+	       ;; We can send an "initial response", saving a
+	       ;; roundtrip.
+	       (concat " "
+		       (propertize
+			(base64-encode-string (sasl-step-data step) t)
+			:sensitive t)))
+	     "\r\n")))
   (list state-data nil))
 
 (define-state bic-connection :sasl-auth
@@ -692,13 +704,24 @@ VALUE must be greater than any marker previously issued."
     (delete-region (point-min) delete-until)))
 
 (cl-defun bic--send (fsm string &key sensitive)
-  (bic--transcript fsm
-		   (concat "C: "
-			   (if sensitive
-			       "<omitted>"
-			     (if (string= (substring string -2) "\r\n")
-				 (substring string 0 -2)
-			       string)) "\n"))
+  (bic--transcript
+   fsm
+   (concat "C: "
+	   (if sensitive
+	       "<omitted>"
+	     (let* ((trimmed
+		     (if (string= (substring string -2) "\r\n")
+			 (substring string 0 -2)
+		       string))
+		    ;; TODO: we assume that the string starts
+		    ;; "non-sensitive", and switches to "sensitive"
+		    ;; throughout.
+		    (sensitive-from (next-single-property-change 0 :sensitive trimmed)))
+	       (if sensitive-from
+		   (concat (substring trimmed 0 sensitive-from) "<omitted>")
+		 trimmed)))
+	   "\n"))
+
   (send-string (plist-get (fsm-get-state-data fsm) :proc) string))
 
 ;; Defined in view.el
