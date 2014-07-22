@@ -739,6 +739,14 @@ It also includes underscore, which is used as an escape character.")
 	  ;; TODO: more specific response handlers here
 	  (list
 	   (list
+	    0 :ok
+	    (lambda (ok-response)
+	      (when (plist-get (cdr ok-response) :code)
+		(warn "Unknown response while IDLE: %S %S %S"
+		      (plist-get (cdr ok-response) :code)
+		      (plist-get (cdr ok-response) :data)
+		      (plist-get (cdr ok-response) :text)))))
+	   (list
 	    1 "EXISTS"
 	    (lambda (_exists-response)
 	      ;; TODO: just fetch new messages, as we know their
