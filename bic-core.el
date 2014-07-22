@@ -495,6 +495,9 @@ proceed."
 	  ;; ...otherwise just store the line in the state.
 	  (plist-put state-data :response-acc
 		     (cons rest (plist-get state-data :response-acc)))))
+       (`("+" . ,_rest)
+	;; Continuation response.  XXX: do something sensible
+	)
        (`(,tag ,type . ,rest)
 	(let* ((pending-commands (plist-get state-data :pending-commands))
 	       (entry (assoc tag pending-commands))

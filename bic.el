@@ -492,6 +492,30 @@ ACCOUNT is a string of the form \"username@server\"."
 		    :tasks (append tasks (list new-task)))))
      (bic--maybe-next-task fsm state-data)
      (list :connected state-data))
+    (`(:queue-task ,new-task)
+     (plist-put state-data :tasks
+		(append (plist-get state-data :tasks) (list new-task)))
+     (bic--maybe-next-task fsm state-data)
+     (list :connected state-data))
+    (`(:idle-timeout ,idle-gensym)
+     ;; 29 minutes have passed.  Break our IDLE command, to ensure the
+     ;; server doesn't close the connection.
+     (pcase (plist-get state-data :current-task)
+       (`(:idle ,(pred (eq idle-gensym)) ,idle-timer)
+	(bic--send (plist-get state-data :connection) "DONE\r\n")))
+     (list :connected state-data))
+    (`(:idle-response (,idle-type ,idle-extra ,idle-responses) ,idle-gensym)
+     ;; An IDLE command has finished, for whatever reason.
+     (unless (eq idle-type :ok)
+       (warn "IDLE response not OK: %S %S" idle-type idle-extra))
+     (when idle-responses
+       (warn "Unhandled responses while idle: %S" idle-responses))
+     (pcase (plist-get state-data :current-task)
+       (`(:idle ,(pred (eq idle-gensym)) ,idle-timer)
+	(cancel-timer idle-timer)
+	(plist-put state-data :current-task nil)))
+     (bic--maybe-next-task fsm state-data)
+     (list :connected state-data))
     (:activate
      ;; Nothing to do.
      (list :connected state-data))
@@ -665,23 +689,63 @@ It also includes underscore, which is used as an escape character.")
     (plist-put state-data :selected mailbox-name)))
 
 (defun bic--maybe-next-task (fsm state-data)
-  (unless (plist-get state-data :current-task)
-    (let* ((tasks (plist-get state-data :tasks))
-	   (task (pop tasks))
-	   (mailbox (car task))
-	   (c (plist-get state-data :connection)))
-      (when task
-	(plist-put state-data :current-task task)
-	(plist-put state-data :tasks tasks)
-	(if (string= mailbox (plist-get state-data :selected))
-	    (bic--do-task fsm state-data task)
-	  (bic-command
-	   c
-	   (concat "SELECT " (bic-quote-string mailbox)
-		   (when (bic-connection--has-capability "CONDSTORE" c)
-		     " (CONDSTORE)"))
-	   (lambda (select-response)
-	     (fsm-send fsm (list :select-response mailbox select-response)))))))))
+  (let ((tasks (plist-get state-data :tasks))
+	(selected-mailbox (plist-get state-data :selected))
+	(c (plist-get state-data :connection)))
+    (pcase (plist-get state-data :current-task)
+      ((and `(:idle ,_ ,idle-timer)
+	    (guard tasks))
+       ;; If we're in IDLE, and there are pending tasks, interrupt
+       ;; the IDLE command.
+       (cancel-timer idle-timer)
+       (plist-put state-data :current-task nil)
+       (bic--send c "DONE\r\n")
+       ;; The OK response to IDLE will trigger a new call to
+       ;; `bic--maybe-next-task'.
+       )
+      ((and `nil (guard tasks))
+       ;; If we're outside any running command, and there are pending
+       ;; tasks, switch to the correct mailbox if necessary, or just
+       ;; do the task.
+       (let* ((task (pop tasks))
+	      (mailbox (car task)))
+	 (plist-put state-data :current-task task)
+	 (plist-put state-data :tasks tasks)
+	 (if (string= mailbox selected-mailbox)
+	     (bic--do-task fsm state-data task)
+	   (bic-command
+	    c
+	    (concat "SELECT " (bic-quote-string mailbox)
+		    (when (bic-connection--has-capability "CONDSTORE" c)
+		      " (CONDSTORE)"))
+	    (lambda (select-response)
+	      (fsm-send fsm (list :select-response mailbox select-response)))))))
+      ((and `nil
+	    (guard (null tasks))
+	    (guard (bic-connection--has-capability "IDLE" c)))
+       ;; If we're outside any running command, and there are no
+       ;; pending tasks, and the server supports IDLE, issue an IDLE
+       ;; command.
+       (let* ((idle-gensym (cl-gensym "IDLE-"))
+	      (timer (run-with-timer (* 29 60) nil
+				     (lambda ()
+				       (fsm-send fsm (list :idle-timeout idle-gensym))))))
+	 (plist-put state-data :current-task (list :idle idle-gensym timer))
+	 (bic-command
+	  c
+	  "IDLE"
+	  (lambda (idle-response)
+	    (fsm-send fsm (list :idle-response idle-response idle-gensym)))
+	  ;; TODO: more specific response handlers here
+	  (list
+	   (list
+	    1 "EXISTS"
+	    (lambda (_exists-response)
+	      ;; TODO: just fetch new messages, as we know their
+	      ;; sequence numbers.
+	      (fsm-send
+	       fsm
+	       `(:queue-task (,selected-mailbox :download-messages))))))))))))
 
 (defun bic--do-task (fsm state-data task)
   (pcase task
