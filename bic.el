@@ -962,8 +962,8 @@ It also includes underscore, which is used as an escape character.")
 	 (let* ((count (length filtered-search-results))
 		(progress
 		 (make-progress-reporter
-		  (format "Fetching %d messages from %s..."
-			  count mailbox)
+		  (format "Fetching %d messages from %s for %s..."
+			  count mailbox (plist-get state-data :address))
 		  0 count))
 		(n 0))
 	   ;; These should be UIDs, since they are a response to a UID
