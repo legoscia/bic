@@ -85,30 +85,31 @@ proceed."
 
 (define-enter-state bic-connection :connecting
   (fsm state-data)
-  (condition-case e
-      (let* ((server (plist-get state-data :server))
-	     (connection-type (plist-get state-data :connection-type))
-	     (buffer (generate-new-buffer (concat "bic-" server)))
-	     (proc (make-network-process
-		    :name (concat "bic-" server)
-		    :buffer buffer
-		    :host server
-		    :service (or (plist-get state-data :port)
-				 (cl-ecase connection-type
-				   ((:starttls :unencrypted) 143)
-				   (:plaintls 993)))
-		    :coding 'binary
-		    :nowait t
-		    :keepalive t
-		    :filter (fsm-make-filter fsm)
-		    :sentinel (fsm-make-sentinel fsm))))
-	(buffer-disable-undo buffer)
-	(list (plist-put state-data :proc proc) nil))
-    (error
-     ;; We can't move directly to a different state in the enter state
-     ;; function...
-     (fsm-send fsm (list :connection-failed e))
-     (list state-data nil))))
+  (let* ((server (plist-get state-data :server))
+	 (connection-type (plist-get state-data :connection-type))
+	 (buffer (generate-new-buffer (concat "bic-" server))))
+    (condition-case e
+	(let ((proc (make-network-process
+		     :name (concat "bic-" server)
+		     :buffer buffer
+		     :host server
+		     :service (or (plist-get state-data :port)
+				  (cl-ecase connection-type
+				    ((:starttls :unencrypted) 143)
+				    (:plaintls 993)))
+		     :coding 'binary
+		     :nowait t
+		     :keepalive t
+		     :filter (fsm-make-filter fsm)
+		     :sentinel (fsm-make-sentinel fsm))))
+	  (buffer-disable-undo buffer)
+	  (list (plist-put state-data :proc proc) nil))
+      (error
+       ;; We can't move directly to a different state in the enter state
+       ;; function...
+       (kill-buffer buffer)
+       (fsm-send fsm (list :connection-failed e))
+       (list state-data nil)))))
 
 (define-state bic-connection :connecting
   (_fsm state-data event _callback)
@@ -553,7 +554,10 @@ include the leading \"*\" tag."
   ;; Delete the connection just to be sure it's gone.
   (let ((proc (plist-get state-data :proc)))
     (when (processp proc)
-      (delete-process proc)))
+      (let ((buffer (process-buffer proc)))
+	(delete-process proc)
+	(when (buffer-live-p buffer)
+	  (kill-buffer buffer)))))
   (let ((callback (plist-get state-data :callback))
 	(fail-keyword (or (plist-get state-data :fail-keyword)
 			  :unknown-reason))
