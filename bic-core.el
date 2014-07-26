@@ -370,21 +370,37 @@ proceed."
 	  ;; There is no way to ask the Emacs SASL library about
 	  ;; whether the client should send data first, so let's take
 	  ;; an empty message from the server as our cue.
-	  (unless (and (zerop (length data))
-		       (null (plist-get state-data :sasl-sent-message)))
-	    (sasl-step-set-data step (base64-decode-string data))
-	    (setq step (sasl-next-step client step)))
-	  ;; Update state-data before sending response, to avoid a race
-	  ;; condition.  plist-put only requires reassignment if the
-	  ;; list was initially empty, which we by now know is not the
-	  ;; case.
-	  (plist-put state-data :sasl-step step)
-	  (plist-put state-data :sasl-sent-message t)
-	  (bic--send fsm (concat (base64-encode-string (or (sasl-step-data step) "") t) "\r\n")
-		     :sensitive t)
-	  ;; XXX: check local success/failure, for mechanisms that
-	  ;; simultaneously authenticate the server
-	  (list :sasl-auth state-data)))
+	  (pcase
+	      (catch :bic-sasl-abort
+		(unless (and (zerop (length data))
+			     (null (plist-get state-data :sasl-sent-message)))
+		  (sasl-step-set-data step (base64-decode-string data))
+		  (setq step (sasl-next-step client step))
+		  nil))
+	    (`nil
+	     ;; Update state-data before sending response, to avoid a race
+	     ;; condition.  plist-put only requires reassignment if the
+	     ;; list was initially empty, which we by now know is not the
+	     ;; case.
+	     (plist-put state-data :sasl-step step)
+	     (plist-put state-data :sasl-sent-message t)
+	     (bic--send fsm (concat (base64-encode-string (or (sasl-step-data step) "") t) "\r\n")
+			:sensitive t)
+	     ;; XXX: check local success/failure, for mechanisms that
+	     ;; simultaneously authenticate the server
+	     (list :sasl-auth state-data))
+	    (:quit
+	     (bic--fail state-data
+			:authentication-abort
+			"User quit during IMAP authentication"))
+	    (:timeout
+	     (bic--fail state-data
+			:authentication-abort
+			"Timeout waiting for password during IMAP authentication"))
+	    (other
+	     (bic--fail state-data
+			:unexpected-error
+			(format "Unexpected result of SASL step: %S" other))))))
        (`("auth" :ok . ,plist)
 	;; XXX: check local success/failure here too
 	(let ((new-capabilities
@@ -395,6 +411,11 @@ proceed."
 	  (plist-put state-data :capabilities new-capabilities)
 	  (plist-put state-data :sasl-client nil)
 	  (plist-put state-data :sasl-step nil)
+	  (when (plist-get state-data :password-save-function)
+	    ;; Ask the user about saving the password.
+	    (with-local-quit
+	      (funcall (plist-get state-data :password-save-function)))
+	    (plist-put state-data :password-save-function nil))
 	  (if new-capabilities
 	      ;; The server saved us a roundtrip and sent
 	      ;; capabilities in the OK message.
@@ -427,32 +448,40 @@ proceed."
 
 (defun bic--read-passphrase-function (state-data)
   (lambda (prompt)
-    (let ((found (car
-		  (auth-source-search
-		   :user (plist-get state-data :username)
-		   :host (plist-get state-data :server)
-		   :port
-		   (let ((symbolic (cl-ecase (plist-get state-data :connection-type)
-				     ((:starttls :unencrypted)
-				      "imap")
-				     (:plaintls
-				      "imaps")))
-			 (numeric (plist-get state-data :port)))
-		     (if numeric
-			 (list symbolic numeric)
-		       symbolic))
-		   :max 1
-		   :require '(:secret)))))
-      ;; Copy the password, as sasl.el wants to erase it.
-      (copy-sequence
-       (if found
-	   ;; Got it from auth-source.
-	   (let ((secret (plist-get found :secret)))
-	     (if (functionp secret)
-		 (funcall secret)
-	       secret))
-	 ;; Ask the user.
-	 (read-passwd prompt))))))
+    (let ((auth-source-result
+	   (with-timeout (60 :timeout)
+	     (or
+	      (with-local-quit
+		(auth-source-search
+		 :user (plist-get state-data :username)
+		 :host (plist-get state-data :server)
+		 :port
+		 (let ((symbolic (cl-ecase (plist-get state-data :connection-type)
+				   ((:starttls :unencrypted)
+				    "imap")
+				   (:plaintls
+				    "imaps")))
+		       (numeric (plist-get state-data :port)))
+		   (if numeric
+		       (list symbolic numeric)
+		     symbolic))
+		 :max 1
+		 :require '(:secret)
+		 :create t))
+	      (and quit-flag :quit)))))
+      (pcase auth-source-result
+	(:timeout
+	 (throw :bic-sasl-abort :timeout))
+	(:quit
+	 (throw :bic-sasl-abort :quit))
+	(`(,found . ,_)
+	 (let ((secret (plist-get found :secret))
+	       (save-function (plist-get found :save-function)))
+	   (plist-put state-data :password-save-function save-function)
+	   ;; Copy the password, as sasl.el wants to erase it.
+	   (copy-sequence (if (functionp secret) (funcall secret) secret))))
+	(other
+	 (throw :bic-sasl-abort (cons :unexpected other)))))))
 
 (define-enter-state bic-connection :authenticated
   (fsm state-data)
