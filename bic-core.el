@@ -270,17 +270,27 @@ proceed."
 		 "imap"
 		 (plist-get state-data :server)))
 	       (sasl-read-passphrase (bic--read-passphrase-function state-data))
-	       (step (sasl-next-step client nil)))
-	  ;; XXX: we can't send the AUTHENTICATE command here, because
-	  ;; sending data over a network connection means that we can
-	  ;; receive data as well, which causes a race condition
-	  ;; whereby the filter function being called with the server
-	  ;; response before we've moved on to the :sasl-auth state.
-	  ;; Thus we send the AUTHENTICATE command in the enter
-	  ;; function instead.
-	  (list :sasl-auth (plist-put
-			    (plist-put state-data :sasl-client client)
-			    :sasl-step step)))))))
+	       (step (catch :bic-sasl-abort (sasl-next-step client nil))))
+	  (pcase step
+	    (:quit
+	     (bic--fail state-data
+			:authentication-abort
+			"User quit during IMAP authentication"))
+	    (:timeout
+	     (bic--fail state-data
+			:authentication-abort
+			"Timeout waiting for password during IMAP authentication"))
+	    (_
+	     ;; XXX: we can't send the AUTHENTICATE command here, because
+	     ;; sending data over a network connection means that we can
+	     ;; receive data as well, which causes a race condition
+	     ;; whereby the filter function being called with the server
+	     ;; response before we've moved on to the :sasl-auth state.
+	     ;; Thus we send the AUTHENTICATE command in the enter
+	     ;; function instead.
+	     (list :sasl-auth (plist-put
+			       (plist-put state-data :sasl-client client)
+			       :sasl-step step)))))))))
    (t
     (list :authenticated state-data))))
 
