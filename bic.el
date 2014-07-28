@@ -48,9 +48,25 @@
 (defvar bic-reconnect-interval 5
   "Attempt to reconnect after this many seconds.")
 
-(defun bic (address)
+(defun bic (&optional new-account)
+  "Start BIC.
+If there are no configured accounts, or if a prefix argument is
+given (setting NEW-ACCOUNT to non-nil), prompt for email address.
+Otherwise, start BIC for all known addresses."
+  (interactive "P")
+  (let ((accounts (directory-files bic-data-directory nil "@")))
+    (if (or new-account (null accounts))
+	(call-interactively #'bic-add-account)
+      (mapc #'bic-add-account
+	    (cl-remove-if #'bic--find-account accounts))
+      ;; TODO: pop up mailbox tree buffer
+      )))
+
+(defun bic-add-account (address)
   (interactive "sEmail address: ")
-  (push (start-bic-account address) bic-running-accounts))
+  (if (bic--find-account address)
+      (user-error "%s already running" address)
+    (push (start-bic-account address) bic-running-accounts)))
 
 (defun bic-deactivate (account)
   (interactive (list (bic--read-running-account)))
