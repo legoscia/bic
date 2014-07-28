@@ -1148,10 +1148,8 @@ It also includes underscore, which is used as an escape character.")
 
 (defun bic-mailbox-open (account mailbox)
   (interactive
-   (let* ((accounts (directory-files bic-data-directory nil "@"))
-	  (account (completing-read "IMAP account: " accounts))
+   (let* ((account (bic--read-existing-account "IMAP account: " t))
 	  (mailboxes (directory-files (expand-file-name account bic-data-directory) nil "[^.]"))
-	  ;; XXX: unsanitize name
 	  (mailbox (completing-read "Mailbox: "
 				    (mapcar #'bic--unsanitize-mailbox-name mailboxes))))
      (list account mailbox)))
@@ -1161,6 +1159,13 @@ It also includes underscore, which is used as an escape character.")
 	(bic-mailbox-mode)
 	(bic-mailbox--init account mailbox)))
     (switch-to-buffer buffer-name)))
+
+(defun bic--read-existing-account (prompt require-match)
+  "Read the name of an email account with completion.
+If REQUIRE-MATCH is non-nil, only accept accounts that we know
+about."
+  (let ((accounts (directory-files bic-data-directory nil "@")))
+    (completing-read prompt accounts nil require-match)))
 
 (defun bic-mailbox--find-buffer (account mailbox)
   "Return the buffer viewing MAILBOX for ACCOUNT.
