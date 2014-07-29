@@ -40,6 +40,16 @@
 
 (defvar bic-running-accounts ())
 
+(defvar bic-account-state-table (make-hash-table :test 'equal)
+  "Hash table mapping accounts to a state keyword.
+Possible values are :connected, :disconnected, and :deactivated.")
+
+(defvar bic-account-state-update-functions ()
+  "List of functions called when account state changes.
+The functions are called with two argument, the name of the
+account, and the new state.  Possible states are the values of
+`bic-account-state-table'.")
+
 (defvar bic-data-directory (locate-user-emacs-file "bic"))
 
 (defvar bic-backlog-days 30
@@ -98,6 +108,7 @@ ACCOUNT is a string of the form \"username@server\"."
 (define-state-machine bic-account
   :start ((address)
 	  "Start using an IMAP account."
+	  (bic--update-account-state address :disconnected)
 	  (let* ((dir (expand-file-name address bic-data-directory))
 		 (state-data (list
 			      :address address
@@ -329,6 +340,7 @@ ACCOUNT is a string of the form \"username@server\"."
 
 (define-enter-state bic-account :connected
   (fsm state-data)
+  (bic--update-account-state (plist-get state-data :address) :connected)
   (plist-put state-data :ever-connected t)
   (plist-put state-data :selected nil)
   ;; Find pending flag changes
@@ -553,6 +565,11 @@ ACCOUNT is a string of the form \"username@server\"."
 
 (define-enter-state bic-account :disconnected
   (fsm state-data)
+  (bic--update-account-state
+   (plist-get state-data :address)
+   (if (plist-get state-data :deactivated)
+       :deactivated
+     :disconnected))
   (unless (plist-get state-data :deactivated)
     (run-with-timer
      bic-reconnect-interval nil
@@ -577,11 +594,23 @@ ACCOUNT is a string of the form \"username@server\"."
        (list :existing state-data)))
     (:activate
      (plist-put state-data :deactivated nil)
+     (bic--update-account-state (plist-get state-data :address) :disconnected)
      (fsm-send fsm :reconnect)
      (list :disconnected state-data))
     (:deactivate
      (plist-put state-data :deactivated t)
+     (bic--update-account-state (plist-get state-data :address) :deactivated)
      (list :disconnected state-data))))
+
+(defun bic--update-account-state (account new-state)
+  (let ((old-state (gethash account bic-account-state-table)))
+    (unless (eq old-state new-state)
+      (puthash account new-state bic-account-state-table)
+      ;; Run in timer, to isolate errors.
+      (run-with-timer
+       0.1 nil
+       #'run-hook-with-args 'bic-account-state-update-functions
+       account new-state))))
 
 (defconst bic-filename-invalid-characters '(?< ?> ?: ?\" ?/ ?\\ ?| ?? ?* ?_)
   "Characters not allowed inside a file name component.
