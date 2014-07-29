@@ -549,8 +549,9 @@ ACCOUNT is a string of the form \"username@server\"."
      (list :connected state-data))
     (:deactivate
      (plist-put state-data :deactivated t)
-     ;; Ask server to disconnect.
-     (bic-command (plist-get state-data :connection) "LOGOUT" #'ignore)
+     ;; Ask server to disconnect - but exit IDLE first, if needed.
+     (plist-put state-data :tasks (list (list :any-mailbox :logout)))
+     (bic--maybe-next-task fsm state-data)
      (list :connected state-data))
     (`((:disconnected ,keyword ,reason) ,connection)
      (cond
@@ -756,7 +757,8 @@ It also includes underscore, which is used as an escape character.")
 	      (mailbox (car task)))
 	 (plist-put state-data :current-task task)
 	 (plist-put state-data :tasks tasks)
-	 (if (string= mailbox selected-mailbox)
+	 (if (or (eq mailbox :any-mailbox)
+		 (string= mailbox selected-mailbox))
 	     (bic--do-task fsm state-data task)
 	   (bic-command
 	    c
@@ -975,6 +977,9 @@ It also includes underscore, which is used as an escape character.")
 					 uidvalidity))))))
 	 ;; Nothing to request - we're done.
 	 (fsm-send fsm (list :task-finished task)))))
+    (`(,_ :logout)
+     ;; No need for a callback - this is the last task.
+     (bic-command (plist-get state-data :connection) "LOGOUT" #'ignore))
     (_
      (warn "Unknown task %S" task))))
 
