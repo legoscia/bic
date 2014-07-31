@@ -33,6 +33,7 @@
 (require 'gnus-art)
 (require 'gnus-range)
 (require 'hex-util)
+(require 'tree-widget)
 
 (defgroup bic nil
   "Settings for the Best IMAP Client."
