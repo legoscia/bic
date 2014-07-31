@@ -1164,6 +1164,80 @@ It also includes underscore, which is used as an escape character.")
 		  (1- month))
 	    year)))
 
+;;; Mailbox tree
+
+(define-derived-mode bic-mailbox-tree-mode special-mode "BIC mailbox tree"
+  "Major mode for tree of IMAP mailboxes accessed by `bic'."
+  (add-hook 'bic-account-state-update-functions
+	    'bic-mailbox-tree--update-account-state)
+  (widget-minor-mode))
+
+(defun bic-mailbox-tree ()
+  "Show mailbox tree buffer."
+  (interactive)
+  (with-current-buffer (get-buffer-create "*Mailboxes*")
+    (unless (derived-mode-p 'bic-mailbox-tree-mode)
+      (bic-mailbox-tree-mode)
+      (bic-mailbox-tree--init))
+    (switch-to-buffer (current-buffer))))
+
+(defvar-local bic-mailbox-tree--widget nil)
+
+(defun bic-mailbox-tree--init ()
+  (unless bic-mailbox-tree--widget
+    (setq bic-mailbox-tree--widget
+	  (widget-create
+	   'tree-widget
+	   :tag "Accounts"
+	   :open t
+	   :expander #'bic-mailbox-tree--accounts
+	   :expander-p (lambda (&rest _) t)))))
+
+(defun bic-mailbox-tree--accounts (_parent)
+  (mapcar
+   (lambda (fsm)
+     (let ((address (plist-get (fsm-get-state-data fsm) :address)))
+       (widget-convert
+	'tree-widget
+	:tag (format "%s (%s)" address (gethash address bic-account-state-table))
+	:address address
+	:expander #'bic-mailbox-tree--mailboxes
+	:expander-p (lambda (&rest _) t))))
+   bic-running-accounts))
+
+(defun bic-mailbox-tree--update-account-state (account new-state)
+  (let ((buffer (get-buffer "*Mailboxes*")))
+    (when buffer
+      (with-current-buffer buffer
+	(let ((account-widget
+	       (cl-find-if
+		(lambda (child)
+		  (and (tree-widget-p child)
+		       (equal (widget-get child :address) account)))
+		(widget-get bic-mailbox-tree--widget :children))))
+	  (when account-widget
+	    (let ((node (car (widget-get account-widget :children))))
+	      (widget-put node :tag (format "%s (%s)" account new-state))
+	      ;; Redraw.
+	      (widget-value-set node (widget-value node)))))))))
+
+(defun bic-mailbox-tree--mailboxes (parent)
+  (let* ((account-name (widget-get parent :address))
+	 (state-data (fsm-get-state-data (bic--find-account account-name)))
+	 (mailboxes
+	  (cl-sort (copy-sequence (plist-get state-data :mailboxes))
+		   #'string-lessp :key #'car)))
+    (mapcar
+     (lambda (mailbox-data)
+       (widget-convert
+	'link
+	:notify (lambda (&rest _ignore)
+		  (bic-mailbox-open account-name (car mailbox-data)))
+	:tag "42"
+	:format "%[%v%] (%t)\n"
+	(car mailbox-data)))
+     mailboxes)))
+
 ;;; Mailbox view
 
 (defface bic-mailbox-unread
