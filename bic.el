@@ -270,28 +270,25 @@ ACCOUNT is a string of the form \"username@server\"."
      (with-file-modes #o700
        (make-directory (plist-get state-data :dir) t))
      ;; Let's save the hostname+port+type combo that was successful.
-     (with-temp-buffer
-       (pcase-let ((`(,hostname ,port ,connection-type)
-		    (plist-get state-data :chosen-candidate)))
-	 (insert
-	  (cl-ecase connection-type
-	    (:starttls "imap")
-	    (:plaintls "imaps"))
-	  "://"
-	  (url-hexify-string (plist-get state-data :username))
-	  "@"
-	  hostname
-	  ;; Only include port if it's not the default port
-	  (pcase (cons connection-type port)
-	    (`(:starttls . 143) "")
-	    (`(:plaintls . 993) "")
-	    (_ (format ":%d" port)))
-	  "\n")
-	 (write-region (point-min) (point-max)
-		       (expand-file-name "connection-info"
-					 (plist-get state-data :dir))
-		       nil :silent)))
-       (list :connected state-data))))
+     (pcase-let ((`(,hostname ,port ,connection-type)
+		  (plist-get state-data :chosen-candidate)))
+       (bic--write-string-to-file
+	(concat
+	 (cl-ecase connection-type
+	   (:starttls "imap")
+	   (:plaintls "imaps"))
+	 "://"
+	 (url-hexify-string (plist-get state-data :username))
+	 "@"
+	 hostname
+	 ;; Only include port if it's not the default port
+	 (pcase (cons connection-type port)
+	   (`(:starttls . 143) "")
+	   (`(:plaintls . 993) "")
+	   (_ (format ":%d" port)))
+	 "\n")
+	(expand-file-name "connection-info" (plist-get state-data :dir))))
+     (list :connected state-data))))
 
 (define-enter-state bic-account :existing
   (fsm state-data)
@@ -702,9 +699,7 @@ It also includes underscore, which is used as an escape character.")
 		    (warn "UIDVALIDITY mismatch: %s vs %s"
 			  (buffer-string) uidvalidity)))
 	      (message "Fresh UIDVALIDITY value: %S" uidvalidity-entry)
-	      (with-temp-buffer
-		(insert uidvalidity)
-		(write-region (point-min) (point-max) uidvalidity-file)))
+	      (bic--write-string-to-file uidvalidity uidvalidity-file))
 	    (cond
 	     (highestmodseq-entry
 	      (let ((old-modseq
@@ -952,10 +947,9 @@ It also includes underscore, which is used as an escape character.")
 		 (when highest-modseq
 		   (let* ((dir (bic--mailbox-dir state-data mailbox))
 			  (modseq-file (expand-file-name "modseq" dir)))
-		     (with-temp-buffer
-		       (insert uidvalidity "-" highest-modseq)
-		       (write-region (point-min) (point-max) modseq-file
-				     nil :silent)))))
+		     (bic--write-string-to-file
+		      (concat uidvalidity "-" highest-modseq)
+		      modseq-file))))
 		(other
 		 (warn "FETCH request failed: %S" other)))
 	      (fsm-send fsm (list :task-finished task)))
@@ -1164,6 +1158,12 @@ It also includes underscore, which is used as an escape character.")
 		   "Jul" "Aug" "Sep" "Oct" "Nov" "Dec"]
 		  (1- month))
 	    year)))
+
+(defun bic--write-string-to-file (string file)
+  "Write STRING to FILE, overwriting any previous contents."
+  (with-temp-buffer
+    (insert string)
+    (write-region (point-min) (point-max) file nil :silent)))
 
 ;;; Mailbox tree
 
