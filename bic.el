@@ -1502,6 +1502,7 @@ If there is no such buffer, return nil."
       (setq-local gnus-summary-buffer
 		  (or (bic-mailbox--find-buffer account mailbox)
 		      (current-buffer)))
+      (setq-local gnus-article-buffer (current-buffer))
       (setq bic--current-account account
 	    bic--current-mailbox mailbox
 	    bic-message--full-uid msg
