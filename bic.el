@@ -796,7 +796,11 @@ It also includes underscore, which is used as an escape character.")
 	      ;; sequence numbers.
 	      (fsm-send
 	       fsm
-	       `(:queue-task (,selected-mailbox :download-messages))))))))))))
+	       `(:queue-task (,selected-mailbox :download-messages)))))
+	   ;; We don't really care about the \Recent flag.  Assuming
+	   ;; that the server always sends EXISTS along with RECENT,
+	   ;; we can ignore this.
+	   (list 1 "RECENT" #'ignore))))))))
 
 (defun bic--do-task (fsm state-data task)
   (pcase task
