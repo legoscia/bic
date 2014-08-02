@@ -406,10 +406,10 @@ ACCOUNT is a string of the form \"username@server\"."
 		current-task)
 	   (bic--do-task fsm state-data current-task))
 	  (current-task
-	   ;; TODO: next task?
 	   (when current-task
+	     ;; This shouldn't happen
 	     (warn "doing nothing about %S" current-task))
-	  ))
+	   (bic--maybe-next-task fsm state-data)))
 	(list :connected state-data nil))
        ;; TODO: handle SELECT error
        ))
@@ -541,6 +541,15 @@ ACCOUNT is a string of the form \"username@server\"."
 	(cancel-timer idle-timer)
 	(plist-put state-data :current-task nil)))
      (bic--maybe-next-task fsm state-data)
+     (list :connected state-data))
+    (`(:ensure-up-to-date ,mailbox)
+     ;; If we have selected the mailbox in question, and are in
+     ;; IDLE there, consider it to be up to date.
+     (unless (and (string= (plist-get state-data :selected) mailbox)
+		  (eq :idle (car-safe (plist-get state-data :current-task))))
+       (bic--queue-task-if-new state-data (list mailbox :download-flags))
+       (bic--queue-task-if-new state-data (list mailbox :download-messages))
+       (bic--maybe-next-task fsm state-data))
      (list :connected state-data))
     (:activate
      ;; Nothing to do.
@@ -730,6 +739,12 @@ It also includes underscore, which is used as an escape character.")
 
     (plist-put state-data :selected mailbox-name)))
 
+(defun bic--queue-task-if-new (state-data task)
+  (let ((existing-tasks (plist-get state-data :tasks)))
+    (unless (member task existing-tasks)
+      (plist-put state-data :tasks
+		 (append existing-tasks (list task))))))
+
 (defun bic--maybe-next-task (fsm state-data)
   (let ((tasks (plist-get state-data :tasks))
 	(selected-mailbox (plist-get state-data :selected))
@@ -756,51 +771,28 @@ It also includes underscore, which is used as an escape character.")
 	 (if (or (eq mailbox :any-mailbox)
 		 (string= mailbox selected-mailbox))
 	     (bic--do-task fsm state-data task)
-	   (bic-command
-	    c
-	    (concat "SELECT " (bic-quote-string mailbox)
-		    (when (bic-connection--has-capability "CONDSTORE" c)
-		      " (CONDSTORE)"))
-	    (lambda (select-response)
-	      (fsm-send fsm (list :select-response mailbox select-response)))))))
+	   (bic--select fsm state-data mailbox))))
       ((and `nil
 	    (guard (null tasks))
 	    (guard (bic-connection--has-capability "IDLE" c)))
        ;; If we're outside any running command, and there are no
        ;; pending tasks, and the server supports IDLE, issue an IDLE
-       ;; command.
-       (let* ((idle-gensym (cl-gensym "IDLE-"))
-	      (timer (run-with-timer (* 29 60) nil
-				     (lambda ()
-				       (fsm-send fsm (list :idle-timeout idle-gensym))))))
-	 (plist-put state-data :current-task (list :idle idle-gensym timer))
-	 (bic-command
-	  c
-	  "IDLE"
-	  (lambda (idle-response)
-	    (fsm-send fsm (list :idle-response idle-response idle-gensym)))
-	  ;; TODO: more specific response handlers here
-	  (list
-	   (list
-	    0 :ok
-	    (lambda (ok-response)
-	      (when (plist-get (cdr ok-response) :code)
-		(warn "Unknown response while IDLE: %S %S %S"
-		      (plist-get (cdr ok-response) :code)
-		      (plist-get (cdr ok-response) :data)
-		      (plist-get (cdr ok-response) :text)))))
-	   (list
-	    1 "EXISTS"
-	    (lambda (_exists-response)
-	      ;; TODO: just fetch new messages, as we know their
-	      ;; sequence numbers.
-	      (fsm-send
-	       fsm
-	       `(:queue-task (,selected-mailbox :download-messages)))))
-	   ;; We don't really care about the \Recent flag.  Assuming
-	   ;; that the server always sends EXISTS along with RECENT,
-	   ;; we can ignore this.
-	   (list 1 "RECENT" #'ignore))))))))
+       ;; command - but ensure that we have selected INBOX first.
+       ;; TODO: do something clever to sync other mailboxes too.
+       (if (string= "INBOX" (plist-get state-data :selected))
+	   (bic--idle fsm state-data)
+	 (bic--select fsm state-data "INBOX"))))))
+
+(defun bic--select (fsm state-data mailbox)
+  "Issue a SELECT command for MAILBOX, and send response to FSM."
+  (let ((c (plist-get state-data :connection)))
+    (bic-command
+     c
+     (concat "SELECT " (bic-quote-string mailbox)
+	     (when (bic-connection--has-capability "CONDSTORE" c)
+	       " (CONDSTORE)"))
+     (lambda (select-response)
+       (fsm-send fsm (list :select-response mailbox select-response))))))
 
 (defun bic--do-task (fsm state-data task)
   (pcase task
@@ -981,6 +973,40 @@ It also includes underscore, which is used as an escape character.")
      (bic-command (plist-get state-data :connection) "LOGOUT" #'ignore))
     (_
      (warn "Unknown task %S" task))))
+
+(defun bic--idle (fsm state-data)
+  (let* ((idle-gensym (cl-gensym "IDLE-"))
+	 (timer (run-with-timer (* 29 60) nil
+				(lambda ()
+				  (fsm-send fsm (list :idle-timeout idle-gensym))))))
+    (plist-put state-data :current-task (list :idle idle-gensym timer))
+    (bic-command
+     (plist-get state-data :connection)
+     "IDLE"
+     (lambda (idle-response)
+       (fsm-send fsm (list :idle-response idle-response idle-gensym)))
+     ;; TODO: more specific response handlers here
+     (list
+      (list
+       0 :ok
+       (lambda (ok-response)
+	 (when (plist-get (cdr ok-response) :code)
+	   (warn "Unknown response while IDLE: %S %S %S"
+		 (plist-get (cdr ok-response) :code)
+		 (plist-get (cdr ok-response) :data)
+		 (plist-get (cdr ok-response) :text)))))
+      (list
+       1 "EXISTS"
+       (lambda (_exists-response)
+	 ;; TODO: just fetch new messages, as we know their
+	 ;; sequence numbers.
+	 (fsm-send
+	  fsm
+	  `(:queue-task (,(plist-get state-data :selected) :download-messages)))))
+      ;; We don't really care about the \Recent flag.  Assuming
+      ;; that the server always sends EXISTS along with RECENT,
+      ;; we can ignore this.
+      (list 1 "RECENT" #'ignore)))))
 
 (defun bic--numeric-string-lessp (s1 s2)
   (cond ((< (length s1) (length s2)) t)
@@ -1339,11 +1365,15 @@ If there is no such buffer, return nil."
 
 (defun bic-mailbox--load-messages ()
   (let* ((uidvalidity-file (expand-file-name "uidvalidity" bic--dir))
-	 (uidvalidity (with-temp-buffer
-			(insert-file-contents-literally uidvalidity-file)
-			(buffer-string)))
-	 (messages (directory-files bic--dir nil
-				    (concat "^" uidvalidity "-[0-9]+$")))
+	 (uidvalidity
+	  (when (file-exists-p uidvalidity-file)
+	    (with-temp-buffer
+	      (insert-file-contents-literally uidvalidity-file)
+	      (buffer-string))))
+	 (messages
+	  (when uidvalidity
+	    (directory-files bic--dir nil
+			     (concat "^" uidvalidity "-[0-9]+$"))))
 	 (buffer (current-buffer)))
     (fsm-send
      (bic--find-account bic--current-account)
@@ -1356,7 +1386,10 @@ If there is no such buffer, return nil."
 	   (dolist (msg messages)
 	     (puthash
 	      msg (ewoc-enter-last bic-mailbox--ewoc msg)
-	      bic-mailbox--ewoc-nodes-table))))))))
+	      bic-mailbox--ewoc-nodes-table))))))
+    (fsm-send
+     (bic--find-account bic--current-account)
+     (list :ensure-up-to-date bic--current-mailbox))))
 
 (defun bic-mailbox--pp (msg)
   (let ((envelope (gethash msg bic-mailbox--hashtable))
@@ -1447,7 +1480,10 @@ If there is no such buffer, return nil."
     ;; First, remove all elements from the ewoc.
     (ewoc-filter bic-mailbox--ewoc #'ignore)
     ;; Then reload.
-    (bic-mailbox--load-messages)))
+    (bic-mailbox--load-messages)
+    ;; Then ask the FSM to ensure that mailbox is up to date.
+    (fsm-send (bic--find-account bic--current-account)
+	      `(:ensure-up-to-date ,bic--current-mailbox))))
 
 (defun bic-mailbox-read-message ()
   "Open the message under point."
