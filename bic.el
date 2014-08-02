@@ -1286,6 +1286,11 @@ It also includes underscore, which is used as an escape character.")
   "Face used for flagged messages."
   :group 'bic)
 
+(defface bic-mailbox-spam
+  '((t (:inherit spam)))
+  "Face used for messages marked as spam."
+  :group 'bic)
+
 (defvar-local bic--current-account nil)
 
 (defvar-local bic--current-mailbox nil)
@@ -1339,6 +1344,8 @@ If there is no such buffer, return nil."
     (define-key map (kbd "d") 'bic-message-mark-read)
     (define-key map (kbd "M-u") 'bic-message-mark-unread)
     (define-key map "!" 'bic-message-mark-flagged)
+    (define-key map "$" 'bic-message-mark-spam)
+    (define-key map "\M-$" 'bic-message-mark-not-spam)
     map))
 
 (define-derived-mode bic-mailbox-mode special-mode "BIC mailbox"
@@ -1413,6 +1420,8 @@ If there is no such buffer, return nil."
 
 (defun bic-mailbox--face-from-flags (flags)
   (cond
+   ((member "$Junk" flags)
+    'bic-mailbox-spam)
    ((member "\\Flagged" flags)
     'bic-mailbox-flagged)
    ((member "\\Seen" flags)
@@ -1424,6 +1433,8 @@ If there is no such buffer, return nil."
   (propertize
    (format "%c%c"
 	   (cond
+	    ((member "$Junk" flags)
+	     ?$)
 	    ((member "\\Flagged" flags)
 	     ?!)
 	    ((member "\\Seen" flags)
@@ -1528,6 +1539,8 @@ If there is no such buffer, return nil."
     (define-key map "d" 'bic-message-mark-read)
     (define-key map (kbd "M-u") 'bic-message-mark-unread)
     (define-key map "!" 'bic-message-mark-flagged)
+    (define-key map "$" 'bic-message-mark-spam)
+    (define-key map "\M-$" 'bic-message-mark-not-spam)
     ;; (define-key map (kbd "RET") 'bic-mailbox-read-message)
     map))
 
@@ -1581,6 +1594,16 @@ If the message is marked as flagged, remove the flag."
 Also mark it as read."
   (interactive)
   (bic-message-flag '("\\Seen" "\\Flagged") ()))
+
+(defun bic-message-mark-spam ()
+  "Mark the message at point as spam (junk)."
+  (interactive)
+  (bic-message-flag '("$Junk") '("$NotJunk")))
+
+(defun bic-message-mark-not-spam ()
+  "Mark the message at point as not spam (not junk)."
+  (interactive)
+  (bic-message-flag '("$NotJunk") '("$Junk")))
 
 (defun bic-message-flag (flags-to-add flags-to-remove)
   "Add and remove flags for the message at point."
