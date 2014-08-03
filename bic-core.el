@@ -151,6 +151,8 @@ proceed."
       (t
        (message "Unknown sentinel event %S" string)
        (list :connecting state-data nil))))
+    (:stop
+     (bic--fail state-data :stopped "Stopped"))
     (unexpected
      (message "Unexpected event %S" unexpected)
      (list :connecting state-data nil))))
@@ -177,6 +179,8 @@ proceed."
 	(bic--fail state-data
 		   :server-disconnect
 		   (format "Server wants to disconnect: %s" text)))))
+    (:stop
+     (bic--fail state-data :stopped "Stopped"))
     (event
      (message "Got event %S" event)
      (list :wait-for-greeting state-data))))
@@ -211,6 +215,8 @@ proceed."
 	(bic--fail state-data
 		   :unexpected-input
 		   (format "Unexpected: %s" line)))))
+    (:stop
+     (bic--fail state-data :stopped "Stopped"))
     (event
      (message "Got event %S" event)
      (list :wait-for-capabilities state-data))))
@@ -227,7 +233,9 @@ proceed."
      ;; strip trailing newline
      (when (eq ?\n (aref reason (1- (length reason))))
        (setq reason (substring reason 0 -1)))
-     (bic--fail state-data :connection-closed reason))))
+     (bic--fail state-data :connection-closed reason))
+    (:stop
+     (bic--fail state-data :stopped "Stopped"))))
 
 (defun bic--advance-connection-state (fsm state-data capabilities)
   (cond
@@ -332,6 +340,8 @@ proceed."
 	(bic--fail state-data
 		   :tls-failure
 		   (format "Unexpected response to STARTTTLS command: %s" line)))))
+    (:stop
+     (bic--fail state-data :stopped "Stopped"))
     (event
      (message "Got event %S" event)
      (list :wait-for-starttls-response state-data))))
@@ -452,6 +462,8 @@ proceed."
 	(bic--fail state-data
 		   :unexpected-input
 		   (format "Unexpected input: %s" line)))))
+    (:stop
+     (bic--fail state-data :stopped "Stopped"))
     (event
      (message "Got event %S" event)
      (list :sasl-auth state-data))))
@@ -555,7 +567,10 @@ proceed."
      ;; strip trailing newline
      (when (eq ?\n (aref reason (1- (length reason))))
        (setq reason (substring reason 0 -1)))
-     (bic--fail state-data :connection-closed reason))))
+     (bic--fail state-data :connection-closed reason))
+
+    (:stop
+     (bic--fail state-data :stopped "Stopped"))))
 
 (defun bic-command (fsm command callback &optional early-callbacks)
   "Send an IMAP command.
