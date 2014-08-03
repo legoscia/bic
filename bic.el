@@ -1341,6 +1341,7 @@ If there is no such buffer, return nil."
     (set-keymap-parent map special-mode-map)
     (define-key map (kbd "RET") 'bic-mailbox-read-message)
     (define-key map "x" 'bic-mailbox-hide-read)
+    (define-key map (kbd "M-g") 'bic-mailbox-update)
     (define-key map (kbd "d") 'bic-message-mark-read)
     (define-key map (kbd "M-u") 'bic-message-mark-unread)
     (define-key map "!" 'bic-message-mark-flagged)
@@ -1491,10 +1492,15 @@ If there is no such buffer, return nil."
     ;; First, remove all elements from the ewoc.
     (ewoc-filter bic-mailbox--ewoc #'ignore)
     ;; Then reload.
-    (bic-mailbox--load-messages)
-    ;; Then ask the FSM to ensure that mailbox is up to date.
-    (fsm-send (bic--find-account bic--current-account)
-	      `(:ensure-up-to-date ,bic--current-mailbox))))
+    (bic-mailbox--load-messages)))
+
+(defun bic-mailbox-update ()
+  "Fetch new messages in current mailbox from server."
+  (interactive)
+  (unless (derived-mode-p 'bic-mailbox-mode)
+    (user-error "Not a mailbox buffer"))
+  (fsm-send (bic--find-account bic--current-account)
+	    `(:ensure-up-to-date ,bic--current-mailbox)))
 
 (defun bic-mailbox-read-message ()
   "Open the message under point."
