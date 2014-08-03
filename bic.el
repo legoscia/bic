@@ -1523,7 +1523,15 @@ If there is no such buffer, return nil."
 	bic-mailbox--ewoc-nodes-table))
       (node
        (when (ewoc-location node)
-	 (ewoc-invalidate bic-mailbox--ewoc node))))))
+	 (let ((old-point (point)))
+	   ;; We use an integer instead of a marker, because we don't
+	   ;; expect the size of the entry to change, and if point was
+	   ;; on this entry or immediately after it, we would lose the
+	   ;; precise position and instead go back to the start of the
+	   ;; entry if we used a marker.
+	   (unwind-protect
+	       (ewoc-invalidate bic-mailbox--ewoc node)
+	     (goto-char old-point))))))))
 
 ;;; Message view
 
