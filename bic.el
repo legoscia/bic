@@ -334,7 +334,12 @@ ACCOUNT is a string of the form \"username@server\"."
 		  keyword))
        (list :disconnected state-data))
       (`(:authenticated ,(pred (eq our-connection)))
-       (list :connected state-data)))))
+       (list :connected state-data))
+      (:deactivate
+       (plist-put state-data :deactivated t)
+       (fsm-send our-connection :stop)
+       (plist-put state-data :connection nil)
+       (list :disconnected state-data)))))
 
 (define-enter-state bic-account :connected
   (fsm state-data)
