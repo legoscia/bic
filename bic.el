@@ -1318,7 +1318,10 @@ It also includes underscore, which is used as an escape character.")
      (list account mailbox)))
   (let ((buffer-name (concat mailbox "-" account)))
     (with-current-buffer (get-buffer-create buffer-name)
-      (unless (derived-mode-p 'bic-mailbox-mode)
+      (if (derived-mode-p 'bic-mailbox-mode)
+	  ;; If we already have a mailbox buffer for this mailbox,
+	  ;; ensure that it's up to date.
+	  (bic-mailbox-update)
 	(bic-mailbox-mode)
 	(bic-mailbox--init account mailbox)))
     (switch-to-buffer buffer-name)))
