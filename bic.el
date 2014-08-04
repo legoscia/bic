@@ -244,8 +244,10 @@ ACCOUNT is a string of the form \"username@server\"."
 	    (other-connections
 	     (remq chosen-connection (mapcar 'car candidate-connections))))
        (plist-put state-data :chosen-candidate chosen-candidate)
-       ;; TODO: close `other-connections'
        (plist-put state-data :connection chosen-connection)
+       ;; Close `other-connections':
+       (dolist (other-connection other-connections)
+	 (fsm-send other-connection :stop))
        (fsm-send chosen-connection :proceed)
        (list :no-data state-data)))
 
