@@ -87,6 +87,11 @@ Otherwise, start BIC for all known addresses."
   (interactive (list (bic--read-running-account)))
   (fsm-send (bic--find-account account) :activate))
 
+(defun bic-stop (account)
+  "Stop the BIC state machine for ACCOUNT."
+  (interactive (list (bic--read-running-account)))
+  (fsm-send (bic--find-account account) :stop))
+
 (defun bic--read-running-account ()
   "Read the name of a running account from the minibuffer."
   (if (null bic-running-accounts)
@@ -122,8 +127,23 @@ ACCOUNT is a string of the form \"username@server\"."
 
 (define-enter-state bic-account nil
   (fsm state-data)
+  (pcase (plist-get state-data :connection)
+    ((and connection (pred identity))
+     (fsm-send connection :stop)))
   (setq bic-running-accounts (delq fsm bic-running-accounts))
+  ;; Need to delete all mailbox buffers, since they reference hash
+  ;; tables that are about to go stale.
+  (dolist (buffer (buffer-list))
+    (with-current-buffer buffer
+      (when (and (derived-mode-p 'bic-mailbox-mode)
+		 (string= bic--current-account (plist-get state-data :address)))
+	(kill-buffer buffer))))
   (list state-data nil))
+
+(define-state bic-account nil
+  (_fsm _state-data _event _callback)
+  ;; Nothing to do here.
+  nil)
 
 (define-enter-state bic-account :no-data
   (fsm state-data)
@@ -290,7 +310,13 @@ ACCOUNT is a string of the form \"username@server\"."
 	   (_ (format ":%d" port)))
 	 "\n")
 	(expand-file-name "connection-info" (plist-get state-data :dir))))
-     (list :connected state-data))))
+     (list :connected state-data))
+
+    (:stop
+     (let ((candidate-connections (mapcar #'car (plist-get state-data :candidate-connections))))
+       (dolist (connection candidate-connections)
+	 (fsm-send connection :stop)))
+     (list nil state-data))))
 
 (define-enter-state bic-account :existing
   (fsm state-data)
@@ -341,7 +367,9 @@ ACCOUNT is a string of the form \"username@server\"."
        (plist-put state-data :deactivated t)
        (fsm-send our-connection :stop)
        (plist-put state-data :connection nil)
-       (list :disconnected state-data)))))
+       (list :disconnected state-data))
+      (:stop
+       (list nil state-data)))))
 
 (define-enter-state bic-account :connected
   (fsm state-data)
@@ -576,7 +604,9 @@ ACCOUNT is a string of the form \"username@server\"."
        (list :disconnected state-data))
       (t
        ;; Not ours.
-       (list :connected state-data))))))
+       (list :connected state-data))))
+    (:stop
+     (list nil state-data))))
 
 (define-enter-state bic-account :disconnected
   (fsm state-data)
@@ -615,7 +645,9 @@ ACCOUNT is a string of the form \"username@server\"."
     (:deactivate
      (plist-put state-data :deactivated t)
      (bic--update-account-state (plist-get state-data :address) :deactivated)
-     (list :disconnected state-data))))
+     (list :disconnected state-data))
+    (:stop
+     (list nil state-data))))
 
 (defun bic--update-account-state (account new-state)
   (let ((old-state (gethash account bic-account-state-table)))
