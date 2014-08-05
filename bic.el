@@ -49,7 +49,10 @@ Possible values are :connected, :disconnected, and :deactivated.")
   "List of functions called when account state changes.
 The functions are called with two argument, the name of the
 account, and the new state.  Possible states are the values of
-`bic-account-state-table'.")
+`bic-account-state-table'.
+
+When an account FSM is stopped, these functions are called with
+`nil' as the new state.")
 
 (defvar bic-data-directory (locate-user-emacs-file "bic"))
 
@@ -138,6 +141,7 @@ ACCOUNT is a string of the form \"username@server\"."
       (when (and (derived-mode-p 'bic-mailbox-mode)
 		 (string= bic--current-account (plist-get state-data :address)))
 	(kill-buffer buffer))))
+  (bic--update-account-state (plist-get state-data :address) nil)
   (list state-data nil))
 
 (define-state bic-account nil
@@ -652,7 +656,9 @@ ACCOUNT is a string of the form \"username@server\"."
 (defun bic--update-account-state (account new-state)
   (let ((old-state (gethash account bic-account-state-table)))
     (unless (eq old-state new-state)
-      (puthash account new-state bic-account-state-table)
+      (if (null new-state)
+	  (remhash account bic-account-state-table)
+	(puthash account new-state bic-account-state-table))
       ;; Run in timer, to isolate errors.
       (run-with-timer
        0.1 nil
@@ -1267,29 +1273,45 @@ It also includes underscore, which is used as an escape character.")
   (mapcar
    (lambda (fsm)
      (let ((address (plist-get (fsm-get-state-data fsm) :address)))
-       (widget-convert
-	'tree-widget
-	:tag (format "%s (%s)" address (gethash address bic-account-state-table))
-	:address address
-	:expander #'bic-mailbox-tree--mailboxes
-	:expander-p (lambda (&rest _) t))))
+       (bic-mailbox-tree--account address)))
    bic-running-accounts))
+
+(defun bic-mailbox-tree--account (address)
+  (widget-convert
+   'tree-widget
+   :tag (format "%s (%s)" address (gethash address bic-account-state-table))
+   :address address
+   :expander #'bic-mailbox-tree--mailboxes
+   :expander-p (lambda (&rest _) t)))
 
 (defun bic-mailbox-tree--update-account-state (account new-state)
   (let ((buffer (get-buffer "*Mailboxes*")))
     (when buffer
       (with-current-buffer buffer
-	(let ((account-widget
-	       (cl-find-if
-		(lambda (child)
-		  (and (tree-widget-p child)
-		       (equal (widget-get child :address) account)))
-		(widget-get bic-mailbox-tree--widget :children))))
-	  (when account-widget
+	(let* ((children (widget-get bic-mailbox-tree--widget :children))
+	       (account-widget
+		(cl-find-if
+		 (lambda (child)
+		   (and (tree-widget-p child)
+			(equal (widget-get child :address) account)))
+		 children)))
+	  (cond
+	   ((and account-widget new-state)
+	    ;; State change for exisiting account
 	    (let ((node (car (widget-get account-widget :children))))
-	      (widget-put node :tag (format "%s (%s)" account new-state))
-	      ;; Redraw.
-	      (widget-value-set node (widget-value node)))))))))
+	      (if (null node)
+		  (warn "no node: %S" account-widget)
+		(widget-put node :tag (format "%s (%s)" account new-state))
+		;; Redraw.
+		(widget-value-set node (widget-value node)))))
+	   ((or
+	     ;; Account removed
+	     (and account-widget (null new-state))
+	     ;; New account
+	     (and new-state (null account-widget)))
+	    ;; Just redraw the tree.  TODO: it would be nice to
+	    ;; preserve the "open" state of tree nodes.
+	    (widget-value-set bic-mailbox-tree--widget (widget-value bic-mailbox-tree--widget)))))))))
 
 (defun bic-mailbox-tree--mailboxes (parent)
   (let* ((account-name (widget-get parent :address))
