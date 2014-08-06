@@ -1242,6 +1242,21 @@ It also includes underscore, which is used as an escape character.")
 
 ;;; Mailbox tree
 
+(defface bic-mailbox-tree-account-connected
+  '((t (:inherit gnus-server-opened)))
+  "Face used for connected accounts in mailbox tree."
+  :group 'bic)
+
+(defface bic-mailbox-tree-account-disconnected
+  '((t (:inherit gnus-server-denied)))
+  "Face used for disconnected accounts in mailbox tree."
+  :group 'bic)
+
+(defface bic-mailbox-tree-account-deactivated
+  '((t (:inherit gnus-server-closed)))
+  "Face used for deactivated accounts in mailbox tree."
+  :group 'bic)
+
 (define-derived-mode bic-mailbox-tree-mode special-mode "BIC mailbox tree"
   "Major mode for tree of IMAP mailboxes accessed by `bic'."
   (add-hook 'bic-account-state-update-functions
@@ -1279,10 +1294,19 @@ It also includes underscore, which is used as an escape character.")
 (defun bic-mailbox-tree--account (address)
   (widget-convert
    'tree-widget
-   :tag (format "%s (%s)" address (gethash address bic-account-state-table))
+   :tag (bic-mailbox-tree--account-tag address (gethash address bic-account-state-table))
    :address address
    :expander #'bic-mailbox-tree--mailboxes
    :expander-p (lambda (&rest _) t)))
+
+(defun bic-mailbox-tree--account-tag (address state)
+  (propertize
+   (format "%s (%s)" address (substring (symbol-name state) 1))
+   'face
+   (cl-case state
+     (:connected 'bic-mailbox-tree-account-connected)
+     (:disconnected 'bic-mailbox-tree-account-disconnected)
+     (:deactivated 'bic-mailbox-tree-account-deactivated))))
 
 (defun bic-mailbox-tree--update-account-state (account new-state)
   (let ((buffer (get-buffer "*Mailboxes*")))
@@ -1301,7 +1325,7 @@ It also includes underscore, which is used as an escape character.")
 	    (let ((node (car (widget-get account-widget :children))))
 	      (if (null node)
 		  (warn "no node: %S" account-widget)
-		(widget-put node :tag (format "%s (%s)" account new-state))
+		(widget-put node :tag (bic-mailbox-tree--account-tag account new-state))
 		;; Redraw.
 		(widget-value-set node (widget-value node)))))
 	   ((or
