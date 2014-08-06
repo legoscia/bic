@@ -83,15 +83,24 @@ Otherwise, start BIC for all known addresses."
     (push (start-bic-account address) bic-running-accounts)))
 
 (defun bic-deactivate (account)
+  "Temporarily deactivate ACCOUNT.
+Close any existing connection, and don't attempt to reconnect
+until reactivated with `bic-activate'."
   (interactive (list (bic--read-running-account)))
   (fsm-send (bic--find-account account) :deactivate))
 
 (defun bic-activate (account)
+  "Reactivate ACCOUNT.
+Attempt to reconnect to an account previously disabled with
+`bic-deactivate'."
   (interactive (list (bic--read-running-account)))
   (fsm-send (bic--find-account account) :activate))
 
 (defun bic-stop (account)
-  "Stop the BIC state machine for ACCOUNT."
+  "Stop the BIC state machine for ACCOUNT.
+
+If you want to keep using BIC, but stop it from attempting to
+reconnect to a certain account, use `bic-deactivate' instead."
   (interactive (list (bic--read-running-account)))
   (fsm-send (bic--find-account account) :stop))
 
