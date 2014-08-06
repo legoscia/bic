@@ -1060,7 +1060,8 @@ It also includes underscore, which is used as an escape character.")
       ;; We don't really care about the \Recent flag.  Assuming
       ;; that the server always sends EXISTS along with RECENT,
       ;; we can ignore this.
-      (list 1 "RECENT" #'ignore)))))
+      (list 1 "RECENT" #'ignore)
+      (list 0 "FLAGS" #'ignore)))))
 
 (defun bic--numeric-string-lessp (s1 s2)
   (cond ((< (length s1) (length s2)) t)
