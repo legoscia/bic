@@ -54,6 +54,21 @@ account, and the new state.  Possible states are the values of
 When an account FSM is stopped, these functions are called with
 `nil' as the new state.")
 
+(defvar bic-account-mailbox-table (make-hash-table :test 'equal)
+  "Hash table of hash tables containing mailbox state.
+The keys are account names, and the values are hash tables whose
+keys are mailbox names and whose values are plists containing
+mailbox state.")
+
+(defvar bic-account-mailbox-update-functions ()
+  "List of functions called when mailbox state changes.
+The functions are called with three arguments: the name of the
+account, the name of the mailbox, and the new state plist.
+
+If the second and third arguments are nil, it means that the
+mailbox list has been renewed, and the new list can be retrieved
+from `bic-account-mailbox-table'.")
+
 (defvar bic-data-directory (locate-user-emacs-file "bic"))
 
 (defvar bic-backlog-days 30
@@ -357,6 +372,10 @@ ACCOUNT is a string of the form \"username@server\"."
 	     (port port))
 	   (lambda (connection status)
 	     (fsm-send fsm (list status connection))))))
+    (let ((mailboxes (bic--directory-directories dir "[^.]")))
+      (bic--store-initial-mailbox-list
+       (plist-get state-data :address)
+       (mapcar #'bic--unsanitize-mailbox-name mailboxes)))
     (plist-put state-data :connection connection)
     (plist-put state-data :username username)
     (plist-put state-data :server server)
@@ -728,7 +747,24 @@ It also includes underscore, which is used as an escape character.")
 	t))
      mailboxes)
     ;; Modify state-data in place:
-    (plist-put state-data :mailboxes (mapcar #'list mailboxes))))
+    (plist-put state-data :mailboxes (mapcar #'list mailboxes))
+    (bic--store-initial-mailbox-list (plist-get state-data :address) mailboxes)))
+
+(defun bic--store-initial-mailbox-list (address mailboxes)
+  (let ((table (gethash address bic-account-mailbox-table)))
+    (if table
+	(clrhash table)
+      (setq table (make-hash-table :test 'equal))
+      (puthash address table bic-account-mailbox-table))
+    (mapc
+     (lambda (mailbox)
+       (puthash mailbox () table))
+     mailboxes)
+    ;; Run in timer, to isolate errors.
+    (run-with-timer
+     0.1 nil
+     #'run-hook-with-args 'bic-account-mailbox-update-functions
+     address nil nil)))
 
 (defun bic--handle-select-response (state-data mailbox-name select-data)
   (cl-flet ((find-entry (type)
@@ -1271,6 +1307,8 @@ It also includes underscore, which is used as an escape character.")
   "Major mode for tree of IMAP mailboxes accessed by `bic'."
   (add-hook 'bic-account-state-update-functions
 	    'bic-mailbox-tree--update-account-state)
+  (add-hook 'bic-account-mailbox-update-functions
+	    'bic-mailbox-tree--update-mailbox-state)
   (widget-minor-mode))
 
 (defun bic-mailbox-tree ()
@@ -1349,10 +1387,14 @@ It also includes underscore, which is used as an escape character.")
 
 (defun bic-mailbox-tree--mailboxes (parent)
   (let* ((account-name (widget-get parent :address))
-	 (state-data (fsm-get-state-data (bic--find-account account-name)))
-	 (mailboxes
-	  (cl-sort (copy-sequence (plist-get state-data :mailboxes))
-		   #'string-lessp :key #'car)))
+	 (mailbox-table (gethash account-name bic-account-mailbox-table))
+	 mailboxes)
+    (when mailbox-table
+      (maphash
+       (lambda (mailbox data)
+	 (push (cons mailbox data) mailboxes))
+       mailbox-table))
+    (setq mailboxes (cl-sort mailboxes #'string-lessp :key #'car))
     (mapcar
      (lambda (mailbox-data)
        (widget-convert
@@ -1363,6 +1405,20 @@ It also includes underscore, which is used as an escape character.")
 	:format "%[%v%] (%t)\n"
 	(car mailbox-data)))
      mailboxes)))
+
+(defun bic-mailbox-tree--update-mailbox-state (account _mailbox _state)
+  (let ((buffer (get-buffer "*Mailboxes*")))
+    (when buffer
+      (with-current-buffer buffer
+	;; TODO: check mailbox non-nil
+	(let ((account-widget
+	       (cl-find-if
+		(lambda (child)
+		  (and (tree-widget-p child)
+		       (equal (widget-get child :address) account)))
+		(widget-get bic-mailbox-tree--widget :children))))
+	  (when account-widget
+	    (widget-value-set account-widget (widget-value account-widget))))))))
 
 ;;; Mailbox view
 
