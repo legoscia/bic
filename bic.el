@@ -1423,9 +1423,16 @@ about."
   (let ((accounts (directory-files bic-data-directory nil "@")))
     (completing-read prompt accounts nil require-match)))
 
+(defun bic--directory-directories (dir regexp)
+  "Like `directory-files', but only returns directories."
+  (cl-remove-if-not
+   (lambda (file)
+     (file-directory-p (expand-file-name file dir)))
+   (directory-files dir nil regexp)))
+
 (defun bic--read-mailbox (prompt account require-match)
   "Read the name of a mailbox for ACCOUNT."
-  (let ((mailboxes (directory-files (expand-file-name account bic-data-directory) nil "[^.]")))
+  (let ((mailboxes (bic--directory-directories (expand-file-name account bic-data-directory) "[^.]")))
     (completing-read prompt (mapcar #'bic--unsanitize-mailbox-name mailboxes)
 		     nil require-match)))
 
