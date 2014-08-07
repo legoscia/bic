@@ -88,8 +88,7 @@ Otherwise, start BIC for all known addresses."
 	(call-interactively #'bic-add-account)
       (mapc #'bic-add-account
 	    (cl-remove-if #'bic--find-account accounts))
-      ;; TODO: pop up mailbox tree buffer
-      )))
+      (bic-mailbox-tree))))
 
 (defun bic-add-account (address)
   (interactive "sEmail address: ")
