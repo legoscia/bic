@@ -1,0 +1,108 @@
+* BIC, the Best IMAP Client
+
+BIC is an IMAP client for Emacs.  It is built on the following
+principles:
+
+- *asynchronicity*: the Emacs user interface should be blocked as
+  little as possible.  Any long-running commands should be run in the
+  background.
+- *minimal configuration*: you should be able to *just read
+  your mail* without adding half a page of configuration variable
+  settings to your =.emacs= file, or installing and configuring any
+  external programs.
+- *offline is online*: the client should have the same behaviour even
+  if the connection to the mail server is lost, and changes should be
+  synchronised seamlessly once the connection is reestablished.
+- *osmosis*: you shouldn't have to ask your mail client to download
+  your messages for offline access; they should just be available
+  without you having to do anything.
+
+That said, it is still a work in progress.  See "Known problems"
+below.
+
+** Requirements
+
+BIC requires *Emacs 24.5*, nothing less.  At the time of this writing,
+Emacs 24.5 hasn't been released yet, so you'll need to use an Emacs
+built from the development tree.  Such an Emacs will identify itself
+as 24.4.50.
+
+BIC also requires a recent version of [[http://emacs-jabber.sourceforge.net][jabber.el]] to be installed.  The
+easiest way to satisfy this is to install the =jabber= package from
+[[http://melpa.milkbox.net/][MELPA]].  Strictly speaking, it only requires =fsm.el= and =srv.el=,
+which should probably be turned into independent libraries.
+
+BIC probably doesn't work very well on Windows, because Emacs doesn't
+support non-blocking connections on Windows.
+
+** How to use
+
+Byte-compile and load =bic-core.el= and =bic.el=, in that order.
+
+Then type =M-x bic=.  If it's the first time you use BIC, it will ask
+for your email address and IMAP server.  Otherwise, it will just start
+BIC with the previously configured account.  (If you want to add
+another account, type =M-x bic-add-account=.)
+
+For any mailbox you open, BIC will download all messages that are less
+than 30 days old, and all messages that are unread or flagged
+regardless of date.
+
+The key bindings are mostly based on Gnus.  See =C-h m= for the
+corresponding buffer for more information.
+
+** How to stop using it
+
+If you just want to stay disconnected for a while, use =M-x
+bic-deactivate=, and then use =M-x bic-activate= when you want to
+reconnect.
+
+If you want to stop BIC, type =M-x bic-stop= for each account you have
+added.  All downloaded data is stored in the =~/.emacs.d/bic=
+directory; you can remove that if you want.
+
+** Known problems
+
+- At the moment, it only downloads messages from your inbox
+  automatically.  For other mailboxes, messages are downloaded when
+  you open that mailbox.
+- It's too verbose, showing too many messages in the echo area.
+- There is currently no way to access messages older than 30 days,
+  unless they are unread or flagged.
+- It doesn't detect that messages have been deleted on the server.
+- Messages encoded as quoted-printable or base64 are not decoded
+  automatically.  You can do it manually with
+  =article-de-quoted-unreadable= and =article-de-base64-unreadable=,
+  respectively.  (I don't understand why it doesn't do this; I just
+  stole the message view from Gnus, which gets this right.)
+- Messages are not marked as read when you open them.  You can do this
+  manually with =d=.
+- Messages are not marked as answered or forwarded when you reply to
+  them or forward them.
+- There is currently no way to copy, move or delete messages.
+- Messages are not threaded.
+- There is no search function.
+- The unread message count in the mailbox tree view is currently
+  hard-coded to 42.
+- If the server doesn't support =IDLE=, messages will be downloaded
+  rather infrequently.
+
+** Troubleshooting
+
+If something goes wrong, there are four places where you may want to
+look for more information:
+
+- The =*bic-transcript-username@example.com*= buffer contains a
+  transcript of IMAP requests and responses exchanged with the
+  server.
+- The =*Warnings*= buffer contains warnings about unexpected events.
+- The =*fsm-debug*= buffer shows messages and state transitions for
+  the state machines.  This is usually uninteresting, except for the
+  messages that contain "warning" or "error".
+- Currently, the =*Messages*= buffer gets more than its fair share of
+  various more or less informative messages.
+
+** Contact
+
+Feel free to open an issue in the issue tracker, or send me an email
+at =magnus.henoch@gmail.com=.
