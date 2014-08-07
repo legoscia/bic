@@ -32,6 +32,7 @@
 (require 'ewoc)
 (require 'gnus-art)
 (require 'gnus-range)
+(require 'gnus-srvr)
 (require 'hex-util)
 (require 'tree-widget)
 
