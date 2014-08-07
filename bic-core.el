@@ -145,6 +145,9 @@ proceed."
 				(error-message-string e))))))))
       ((or (string-prefix-p "failed" string)
 	   (string-prefix-p "deleted" string))
+       ;; strip trailing newline
+       (when (eq ?\n (aref string (1- (length string))))
+	 (setq string (substring string 0 -1)))
        (bic--fail state-data
 		  :connection-failed
 		  (format "connection failed: %s" string)))
