@@ -478,8 +478,21 @@ ACCOUNT is a string of the form \"username@server\"."
 	     (warn "doing nothing about %S" current-task))
 	   (bic--maybe-next-task fsm state-data)))
 	(list :connected state-data nil))
-       ;; TODO: handle SELECT error
-       ))
+       (`(,(or :no :bad) ,response ,_response-lines)
+	(warn "Cannot select %s for %s: %s"
+	      mailbox-name (plist-get state-data :address)
+	      (or (plist-get response :text)
+		  (plist-get response :code)
+		  ""))
+	(plist-put state-data :selected nil)
+	;; Check if we were trying to select this mailbox for the
+	;; current task.
+	(pcase (plist-get state-data :current-task)
+	  ((and `(,(pred (string= mailbox-name)) . ,_)
+		current-task)
+	   (plist-put state-data :current-task nil)
+	   (bic--maybe-next-task fsm state-data)))
+	(list :connected state-data nil))))
     (`(:early-fetch-response ,selected-mailbox ,msg ,uidvalidity)
      (let* ((dir (bic--mailbox-dir state-data selected-mailbox))
 	    (overview-file (expand-file-name "overview" dir))
