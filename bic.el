@@ -408,6 +408,7 @@ ACCOUNT is a string of the form \"username@server\"."
   (bic--update-account-state (plist-get state-data :address) :connected)
   (plist-put state-data :ever-connected t)
   (plist-put state-data :selected nil)
+  (plist-put state-data :selecting nil)
   ;; Find pending flag changes
   (let* ((default-directory (plist-get state-data :dir))
 	 (pending-flags-files (file-expand-wildcards "*/pending-flags"))
@@ -463,6 +464,8 @@ ACCOUNT is a string of the form \"username@server\"."
        ;; TODO: handle LIST error
        ))
     (`(:select-response ,mailbox-name ,select-response)
+     (when (string= mailbox-name (plist-get state-data :selecting))
+       (plist-put state-data :selecting nil))
      (pcase select-response
        (`(:ok ,_ ,select-data)
 	(bic--handle-select-response state-data mailbox-name select-data)
@@ -851,8 +854,13 @@ It also includes underscore, which is used as an escape character.")
 (defun bic--maybe-next-task (fsm state-data)
   (let ((tasks (plist-get state-data :tasks))
 	(selected-mailbox (plist-get state-data :selected))
-	(c (plist-get state-data :connection)))
+	(c (plist-get state-data :connection))
+	(selecting (plist-get state-data :selecting)))
     (pcase (plist-get state-data :current-task)
+      ((guard selecting)
+       ;; If we're in the process of selecting a new mailbox, don't
+       ;; issue new commands.
+       nil)
       ((and `(:idle ,_ ,idle-timer)
 	    (guard tasks))
        ;; If we're in IDLE, and there are pending tasks, interrupt
@@ -889,6 +897,7 @@ It also includes underscore, which is used as an escape character.")
 (defun bic--select (fsm state-data mailbox)
   "Issue a SELECT command for MAILBOX, and send response to FSM."
   (let ((c (plist-get state-data :connection)))
+    (plist-put state-data :selecting mailbox)
     (bic-command
      c
      (concat "SELECT " (bic-quote-string mailbox)
