@@ -70,11 +70,6 @@ directory; you can remove that if you want.
 - There is currently no way to access messages older than 30 days,
   unless they are unread or flagged.
 - It doesn't detect that messages have been deleted on the server.
-- Messages encoded as quoted-printable or base64 are not decoded
-  automatically.  You can do it manually with
-  =article-de-quoted-unreadable= and =article-de-base64-unreadable=,
-  respectively.  (I don't understand why it doesn't do this; I just
-  stole the message view from Gnus, which gets this right.)
 - Messages are not marked as read when you open them.  You can do this
   manually with =d=.
 - Messages are not marked as answered or forwarded when you reply to

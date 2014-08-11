@@ -1771,6 +1771,7 @@ If there is no such buffer, return nil."
 			    nil nil nil t)
       ;; Gnus already does a fine job displaying messages, so we might
       ;; as well piggy-back on that:
+      (run-hooks 'gnus-article-decode-hook)
       (gnus-article-prepare-display))
     (let ((window (display-buffer (current-buffer))))
       (set-window-start window (point-min)))))
