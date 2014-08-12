@@ -375,7 +375,21 @@ ACCOUNT is a string of the form \"username@server\"."
     (let ((mailboxes (bic--directory-directories dir "[^.]")))
       (bic--store-initial-mailbox-list
        (plist-get state-data :address)
-       (mapcar #'bic--unsanitize-mailbox-name mailboxes)))
+       (mapcar
+	(lambda (mailbox-dir-name)
+	  (let ((mailbox (bic--unsanitize-mailbox-name mailbox-dir-name))
+		(attributes-file
+		 (expand-file-name
+		  "attributes"
+		  (expand-file-name mailbox-dir-name dir))))
+	    (list
+	     mailbox
+	     :attributes
+	     (when (file-exists-p attributes-file)
+	       (with-temp-buffer
+		 (insert-file-contents-literally attributes-file)
+		 (split-string (buffer-string) "\n"))))))
+	mailboxes)))
     (plist-put state-data :connection connection)
     (plist-put state-data :username username)
     (plist-put state-data :server server)
@@ -748,22 +762,23 @@ It also includes underscore, which is used as an escape character.")
 (defun bic--handle-list-response (state-data list-data)
   (let ((mailboxes
 	 (mapcar
-	  ;; TODO: What about \Noselect?
 	  (lambda (x)
 	    (pcase x
-	      (`("LIST" ,_ ,_ ,mailbox-name)
-	       mailbox-name)
+	      (`("LIST" ,attributes ,_separator ,mailbox-name)
+	       (list mailbox-name :attributes attributes))
 	      (_
 	       (error "Unexpected LIST response: %S" x))))
 	  list-data)))
     (mapc
-     (lambda (mailbox-name)
-       (make-directory
-	(bic--mailbox-dir state-data mailbox-name)
-	t))
+     (lambda (mailbox)
+       (let ((dir (bic--mailbox-dir state-data (car mailbox))))
+	 (make-directory dir t)
+	 (bic--write-string-to-file
+	  (mapconcat #'identity (plist-get (cdr mailbox) :attributes) "\n")
+	  (expand-file-name "attributes" dir))))
      mailboxes)
     ;; Modify state-data in place:
-    (plist-put state-data :mailboxes (mapcar #'list mailboxes))
+    (plist-put state-data :mailboxes mailboxes)
     (bic--store-initial-mailbox-list (plist-get state-data :address) mailboxes)))
 
 (defun bic--store-initial-mailbox-list (address mailboxes)
@@ -774,7 +789,7 @@ It also includes underscore, which is used as an escape character.")
       (puthash address table bic-account-mailbox-table))
     (mapc
      (lambda (mailbox)
-       (puthash mailbox () table))
+       (puthash (car mailbox) (cdr mailbox) table))
      mailboxes)
     ;; Run in timer, to isolate errors.
     (run-with-timer
@@ -1419,13 +1434,20 @@ It also includes underscore, which is used as an escape character.")
     (setq mailboxes (cl-sort mailboxes #'string-lessp :key #'car))
     (mapcar
      (lambda (mailbox-data)
-       (widget-convert
-	'link
-	:notify (lambda (&rest _ignore)
-		  (bic-mailbox-open account-name (car mailbox-data)))
-	:tag "42"
-	:format "%[%v%] (%t)\n"
-	(car mailbox-data)))
+       (let ((mailbox-name (car mailbox-data))
+	     (attributes (plist-get (cdr mailbox-data) :attributes)))
+	 ;; It's unclear whether these attributes are case sensitive
+	 ;; or not, so let's use cl-equalp.
+	 (if (or (cl-member "\\Noselect" attributes :test #'cl-equalp)
+		 (cl-member "\\NonExistent" attributes :test #'cl-equalp))
+	     (widget-convert 'item mailbox-name)
+	   (widget-convert
+	    'link
+	    :notify (lambda (&rest _ignore)
+		      (bic-mailbox-open account-name (car mailbox-data)))
+	    :tag "42"
+	    :format "%[%v%] (%t)\n"
+	    mailbox-name))))
      mailboxes)))
 
 (defun bic-mailbox-tree--update-mailbox-state (account _mailbox _state)
