@@ -457,7 +457,11 @@ ACCOUNT is a string of the form \"username@server\"."
 
     ;; Get list of mailboxes
     (bic-command c
-		 "LIST \"\" \"*\""
+		 (cond
+		  ((bic-connection--has-capability "LIST-EXTENDED" c)
+		   "LIST \"\" \"*\" RETURN (SUBSCRIBED)")
+		  (t
+		   "LIST \"\" \"*\""))
 		 (lambda (response)
 		   (fsm-send fsm (list :list-response response)))))
   (list state-data nil))
@@ -468,7 +472,7 @@ ACCOUNT is a string of the form \"username@server\"."
     (`(:list-response ,list-response)
      (pcase list-response
        (`(:ok ,_ ,list-data)
-	(bic--handle-list-response state-data list-data)
+	(bic--handle-list-response fsm state-data list-data)
 	;; TODO: open extra connection(s), start downloading interesting
 	;; messages from interesting mailboxes
 
@@ -477,6 +481,13 @@ ACCOUNT is a string of the form \"username@server\"."
 	(bic--maybe-next-task fsm state-data)
 	(list :connected state-data nil))
        ;; TODO: handle LIST error
+       ))
+    (`(:lsub-response ,lsub-response)
+     (pcase lsub-response
+       (`(:ok ,_ ,lsub-data)
+	(bic--handle-lsub-response state-data lsub-data)
+	(list :connected state-data nil))
+       ;; TODO: handle LSUB error
        ))
     (`(:select-response ,mailbox-name ,select-response)
      (when (string= mailbox-name (plist-get state-data :selecting))
@@ -760,16 +771,30 @@ It also includes underscore, which is used as an escape character.")
    (bic--sanitize-mailbox-name mailbox-name)
    (plist-get state-data :dir)))
 
-(defun bic--handle-list-response (state-data list-data)
-  (let ((mailboxes
-	 (mapcar
-	  (lambda (x)
-	    (pcase x
-	      (`("LIST" ,attributes ,_separator ,mailbox-name)
-	       (list mailbox-name :attributes attributes))
-	      (_
-	       (error "Unexpected LIST response: %S" x))))
-	  list-data)))
+(defun bic--handle-list-response (fsm state-data list-data)
+  (let* ((old-mailboxes (plist-get state-data :mailboxes))
+	 ;; If the server supports LIST-EXTENDED, then we will have
+	 ;; asked for mailbox subscription information.
+	 (subscription-return
+	  (bic-connection--has-capability "LIST-EXTENDED" (plist-get state-data :connection)))
+	 (mailboxes
+	  (mapcar
+	   (lambda (x)
+	     (pcase x
+	       (`("LIST" ,attributes ,_separator ,mailbox-name)
+		;; If we weren't asking for subscription information,
+		;; keep previous subscription status.
+		(let* ((old-attributes
+			(unless subscription-return
+			  (plist-get (cdr (assoc mailbox-name old-mailboxes)) :attributes)))
+		       (subscription-attribute
+			(when (cl-member "\\Subscribed" old-attributes :test #'cl-equalp)
+			  (list "\\Subscribed"))))
+		  (list mailbox-name
+			:attributes (append subscription-attribute attributes))))
+	       (_
+		(error "Unexpected LIST response: %S" x))))
+	   list-data)))
     (mapc
      (lambda (mailbox)
        (let ((dir (bic--mailbox-dir state-data (car mailbox))))
@@ -780,7 +805,46 @@ It also includes underscore, which is used as an escape character.")
      mailboxes)
     ;; Modify state-data in place:
     (plist-put state-data :mailboxes mailboxes)
-    (bic--store-initial-mailbox-list (plist-get state-data :address) mailboxes)))
+    (bic--store-initial-mailbox-list (plist-get state-data :address) mailboxes)
+    ;; If we didn't get the subscription info already, ask for it with LSUB.
+    (unless subscription-return
+      (bic-command
+       (plist-get state-data :connection)
+       "LSUB \"\" \"*\""
+       (lambda (response)
+    	 (fsm-send fsm (list :lsub-response response)))))))
+
+(defun bic--handle-lsub-response (state-data lsub-data)
+  (let ((mailboxes (plist-get state-data :mailboxes))
+	(subscribed-mailboxes
+	 (delq nil
+	       (mapcar
+		(lambda (lsub)
+		  (pcase lsub
+		    (`("LSUB" ,_attributes ,_separator ,mailbox-name)
+		     mailbox-name)))
+		lsub-data))))
+    (mapc
+     (lambda (mailbox-entry)
+       (let* ((mailbox (car mailbox-entry))
+	      (old-attributes (plist-get (cdr mailbox-entry) :attributes))
+	      new-attributes
+	      (just-subscribed (and (member mailbox subscribed-mailboxes)
+				    (not (member "\\Subscribed" old-attributes))))
+	      (just-unsubscribed (and (member "\\Subscribed" old-attributes)
+				      (not (member mailbox subscribed-mailboxes)))))
+	 (cond
+	  (just-subscribed
+	   (setq new-attributes (cons "\\Subscribed" old-attributes)))
+	  (just-unsubscribed
+	   (setq new-attributes (remove "\\Subscribed" old-attributes))))
+	 (when (or just-subscribed just-unsubscribed)
+	   ;; TODO: update mailbox entries for mailbox tree
+	   (setf (cdr mailbox-entry) (plist-put (cdr mailbox-entry) :attributes new-attributes))
+	   (bic--write-string-to-file
+	    (mapconcat #'identity new-attributes "\n")
+	    (expand-file-name "attributes" (bic--mailbox-dir state-data mailbox))))))
+     mailboxes)))
 
 (defun bic--store-initial-mailbox-list (address mailboxes)
   (let ((table (gethash address bic-account-mailbox-table)))
@@ -1341,6 +1405,16 @@ It also includes underscore, which is used as an escape character.")
   "Face used for deactivated accounts in mailbox tree."
   :group 'bic)
 
+(defface bic-mailbox-tree-mailbox-subscribed
+  '((t (:inherit gnus-group-mail-1)))
+  "Face used for subscribed mailboxes in mailbox tree."
+  :group 'bic)
+
+(defface bic-mailbox-tree-mailbox-unsubscribed
+  '((t (:inherit gnus-group-mail-low-empty)))
+  "Face used for unsubscribed mailboxes in mailbox tree."
+  :group 'bic)
+
 (define-derived-mode bic-mailbox-tree-mode special-mode "BIC mailbox tree"
   "Major mode for tree of IMAP mailboxes accessed by `bic'."
   (add-hook 'bic-account-state-update-functions
@@ -1448,6 +1522,9 @@ It also includes underscore, which is used as an escape character.")
 		      (bic-mailbox-open account-name (car mailbox-data)))
 	    :tag "42"
 	    :format "%[%v%] (%t)\n"
+	    :button-face (if (cl-member "\\Subscribed" attributes :test #'cl-equalp)
+			     'bic-mailbox-tree-mailbox-subscribed
+			   'bic-mailbox-tree-mailbox-unsubscribed)
 	    mailbox-name))))
      mailboxes)))
 
