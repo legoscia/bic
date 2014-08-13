@@ -1415,13 +1415,37 @@ It also includes underscore, which is used as an escape character.")
   "Face used for unsubscribed mailboxes in mailbox tree."
   :group 'bic)
 
+(defvar bic-mailbox-tree-mode-map
+  (let ((map (make-sparse-keymap)))
+    (set-keymap-parent map special-mode-map)
+    (define-key map (kbd "RET") 'bic-mailbox-tree-press-button-on-current-line)
+    map))
+
 (define-derived-mode bic-mailbox-tree-mode special-mode "BIC mailbox tree"
   "Major mode for tree of IMAP mailboxes accessed by `bic'."
   (add-hook 'bic-account-state-update-functions
 	    'bic-mailbox-tree--update-account-state)
   (add-hook 'bic-account-mailbox-update-functions
 	    'bic-mailbox-tree--update-mailbox-state)
-  (widget-minor-mode))
+  (widget-minor-mode)
+  (setq-local widget-global-map bic-mailbox-tree-mode-map))
+
+(defun bic-mailbox-tree-press-button-on-current-line (&optional event)
+  "Find button on current line and press it.
+By default, widget mode is too stingy about where the point has
+to be for the button press to count.  Let's try to do what the
+user expects."
+  (interactive "@d")
+  (save-excursion
+    (forward-line 0)
+    (let* ((button-pos
+	    (if (get-char-property (point) 'button)
+		(point)
+	      (next-single-char-property-change (point) 'button nil (line-end-position))))
+	   (button (when button-pos (get-char-property button-pos 'button))))
+      (if (null button)
+	  (user-error "No button on this line")
+	(widget-apply-action button event)))))
 
 (defun bic-mailbox-tree ()
   "Show mailbox tree buffer."
