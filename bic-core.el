@@ -39,6 +39,10 @@
 (defvar bic-send-cleartext-password nil
   "If non-nil, allow sending passwords on unencrypted connections.")
 
+(defvar bic-ignored-capabilities nil
+  "Pretend that the server doesn't advertise these capabilities.
+This should be a list of strings.  For debugging only.")
+
 (defvar-local bic--issued-markers nil
   "Hash table of markers issued from current buffer.
 Ideally, this should be a weak ordered list, but since Emacs Lisp
@@ -1040,8 +1044,9 @@ formatted as integers."
 (defun bic-connection--has-capability (capability connection)
   "Return true if CONNECTION reported CAPABILITY.
 Authentication methods cannot be queried."
-  (member capability (plist-get (fsm-get-state-data connection)
-				:capabilities)))
+  (and (member capability (plist-get (fsm-get-state-data connection)
+				     :capabilities))
+       (not (member capability bic-ignored-capabilities))))
 
 (provide 'bic-core)
 ;;; bic-core.el ends here
