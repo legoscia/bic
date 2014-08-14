@@ -1712,17 +1712,21 @@ If there is no such buffer, return nil."
     (pcase envelope
       (`(,date ,subject (,from . ,_) . ,_)
        ;; TODO: nicer format
-       (insert
-	(propertize
-	 (concat
-	  (bic-mailbox--format-flags flags) " "
-	  (bic-mailbox--format-date date) "\t[ "
-	  (format "%-20.20s"
-		  (if (not (string= (car from) "NIL"))
-		      (rfc2047-decode-string (car from))
-		    (concat (nth 2 from) "@" (nth 3 from))))
-	  " ] " (rfc2047-decode-string subject))
-	 'face (bic-mailbox--face-from-flags flags))))
+       (cl-flet ((col (n) (propertize " " 'display `(space :align-to ,n))))
+	 (insert
+	  (propertize
+	   (concat
+	    (bic-mailbox--format-flags flags)
+	    (col 3) (bic-mailbox--format-date date)
+	    (col 16) "[ "
+	    (truncate-string-to-width
+	     (if (not (string= (car from) "NIL"))
+		 (rfc2047-decode-string (car from))
+	       (concat (nth 2 from) "@" (nth 3 from)))
+	     20)
+	    (col 39) "] "
+	    (rfc2047-decode-string subject))
+	   'face (bic-mailbox--face-from-flags flags)))))
       (`nil
        (warn "Message %s not found in hash table" msg)))))
 
