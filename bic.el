@@ -1885,7 +1885,23 @@ With prefix argument, don't mark message as read."
     map))
 
 (define-derived-mode bic-message-mode gnus-article-mode "BIC Message"
-  "Major mode for messages viewed from `bic'.")
+  "Major mode for messages viewed from `bic'.
+
+Useful key bindings:
+\\<bic-message-mode-map>
+key\taction
+---\t-------
+\\[bic-message-mark-read]\tMark read
+\\[bic-message-mark-unread]\tMark unread
+\\[bic-message-mark-flagged]\tMark as \"flagged\"
+
+\\[message-reply]\tReply
+\\[message-wide-reply]\tReply all
+\\[message-forward]\tForward
+
+All key bindings:
+
+\\{bic-message-mode-map}")
 
 (defun bic-message-display (account mailbox msg)
   (with-current-buffer (get-buffer-create "*BIC-Message*")
