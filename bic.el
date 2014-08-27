@@ -425,8 +425,19 @@ ACCOUNT is a string of the form \"username@server\"."
   (plist-put state-data :selecting nil)
   ;; Find pending flag changes
   (let* ((default-directory (plist-get state-data :dir))
-	 (pending-flags-files (file-expand-wildcards "*/pending-flags"))
-	 ;; TODO: trim empty files?
+	 (pending-flags-files
+	  ;; Because of the way we remove entries from pending flags
+	  ;; files, we might leave files of size 1 that should be
+	  ;; ignored.
+	  (cl-remove-if-not
+	   (lambda (pending-flags-file)
+	     (pcase (nth 7 (file-attributes pending-flags-file))
+	       (`nil
+		(warn "Cannot open pending flags file `%s'" pending-flags-file)
+		nil)
+	       (size
+		(> size 1))))
+	   (file-expand-wildcards "*/pending-flags")))
 	 (mailboxes-with-pending-flags
 	  (mapcar
 	   (lambda (pending-flags-file)
