@@ -1824,15 +1824,18 @@ If there is no such buffer, return nil."
   (fsm-send (bic--find-account bic--current-account)
 	    `(:ensure-up-to-date ,bic--current-mailbox)))
 
-(defun bic-mailbox-read-message ()
-  "Open the message under point."
-  (interactive)
+(defun bic-mailbox-read-message (keep-unread)
+  "Open the message under point, and mark it as read.
+With prefix argument, don't mark message as read."
+  (interactive "P")
   (unless (derived-mode-p 'bic-mailbox-mode)
     (user-error "Not a mailbox buffer"))
   (let ((msg (ewoc-data (ewoc-locate bic-mailbox--ewoc (point)))))
     (bic-message-display bic--current-account
 			 bic--current-mailbox
-			 msg)))
+			 msg)
+    (unless keep-unread
+      (bic-message-flag '("\\Seen") '()))))
 
 (defun bic-mailbox--maybe-update-message (address mailbox full-uid)
   (pcase (bic-mailbox--find-buffer address mailbox)
