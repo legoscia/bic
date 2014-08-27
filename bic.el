@@ -577,7 +577,7 @@ ACCOUNT is a string of the form \"username@server\"."
 
 	    (pcase body-entry
 	      ((guard (null uid))
-	       (warn "Missing UID in FETCH response: %S" msg))
+	       (message "Missing UID in FETCH response: %S" msg))
 	      (`("BODY" nil (,start-marker . ,end-marker) . ,_)
 	       ;; If we do more clever fetching at some point, we'd
 	       ;; have a non-nil section-spec.
@@ -601,7 +601,7 @@ ACCOUNT is a string of the form \"username@server\"."
 				 overview-file :append :silent))
 		 (puthash full-uid envelope-data overview-table)))
 	      (`("BODY" . ,other)
-	       (message "Unexpected BODY in FETCH response: %S" other))
+	       (warn "Unexpected BODY in FETCH response: %S" other))
 	      (other
 	       ;; TODO: only warn if message absent in overview?
 	       ;; (message "Missing BODY in FETCH response: %S" other)
