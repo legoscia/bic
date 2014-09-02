@@ -1691,7 +1691,8 @@ If there is no such buffer, return nil."
   "Major mode for IMAP mailboxes accessed by `bic'."
   (setq header-line-format
 	'(" " bic--current-account " " bic--current-mailbox))
-  (setq-local revert-buffer-function #'bic-mailbox-reload))
+  (setq-local revert-buffer-function #'bic-mailbox-reload)
+  (setq-local truncate-lines t))
 
 (defun bic-mailbox--init (account mailbox)
   (setq bic--current-account account
