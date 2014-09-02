@@ -647,9 +647,19 @@ ACCOUNT is a string of the form \"username@server\"."
      ;; 29 minutes have passed.  Break our IDLE command, to ensure the
      ;; server doesn't close the connection.
      (pcase (plist-get state-data :current-task)
-       (`(:idle ,(pred (eq idle-gensym)) ,idle-timer)
-	(bic--send (plist-get state-data :connection) "DONE\r\n")))
+       (`(:idle ,(pred (eq idle-gensym)) ,_idle-timer)
+	(bic--idle-done fsm state-data)))
      (list :connected state-data))
+    (`(:idle-done-timeout ,idle-gensym)
+     (pcase (plist-get state-data :current-task)
+       (`(:idle-done ,(pred (eq idle-gensym)) ,_idle-timer)
+	(message "Timeout while leaving IDLE; connection for %s considered lost"
+		 (plist-get state-data :address))
+	(fsm-send (plist-get state-data :connection) :stop)
+	(list :disconnected state-data))
+       (_
+	;; Timer message received out of order; ignore.
+	(list :connected state-data))))
     (`(:idle-response (,idle-type ,idle-extra ,idle-responses) ,idle-gensym)
      ;; An IDLE command has finished, for whatever reason.
      (unless (eq idle-type :ok)
@@ -657,7 +667,8 @@ ACCOUNT is a string of the form \"username@server\"."
      (when idle-responses
        (warn "Unhandled responses while idle: %S" idle-responses))
      (pcase (plist-get state-data :current-task)
-       (`(:idle ,(pred (eq idle-gensym)) ,idle-timer)
+       ;; XXX: "or" correct?
+       (`(,(or :idle :idle-done) ,(pred (eq idle-gensym)) ,idle-timer)
 	(cancel-timer idle-timer)
 	(plist-put state-data :current-task nil)))
      (bic--maybe-next-task fsm state-data)
@@ -952,13 +963,12 @@ It also includes underscore, which is used as an escape character.")
        ;; If we're in the process of selecting a new mailbox, don't
        ;; issue new commands.
        nil)
-      ((and `(:idle ,_ ,idle-timer)
+      ((and `(:idle ,_idle-gensym ,idle-timer)
 	    (guard tasks))
        ;; If we're in IDLE, and there are pending tasks, interrupt
        ;; the IDLE command.
        (cancel-timer idle-timer)
-       (plist-put state-data :current-task nil)
-       (bic--send c "DONE\r\n")
+       (bic--idle-done fsm state-data)
        ;; The OK response to IDLE will trigger a new call to
        ;; `bic--maybe-next-task'.
        )
@@ -1211,6 +1221,16 @@ It also includes underscore, which is used as an escape character.")
       ;; we can ignore this.
       (list 1 "RECENT" #'ignore)
       (list 0 "FLAGS" #'ignore)))))
+
+(defun bic--idle-done (fsm state-data)
+  (let ((idle-gensym (cl-second (plist-get state-data :current-task))))
+    (plist-put state-data :current-task
+	       (list :idle-done idle-gensym
+		     (run-with-timer
+		      10 nil
+		      (lambda ()
+			(fsm-send fsm (list :idle-done-timeout idle-gensym)))))))
+  (bic--send (plist-get state-data :connection) "DONE\r\n"))
 
 (defun bic--numeric-string-lessp (s1 s2)
   (cond ((< (length s1) (length s2)) t)
