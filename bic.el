@@ -30,6 +30,7 @@
 (require 'cl-lib)
 (require 'utf7)
 (require 'ewoc)
+(require 'gnus)
 (require 'gnus-art)
 (require 'gnus-range)
 (require 'gnus-srvr)
@@ -1903,6 +1904,7 @@ With prefix argument, don't mark message as read."
     (define-key map "$" 'bic-message-mark-spam)
     (define-key map "\M-$" 'bic-message-mark-not-spam)
     ;; (define-key map (kbd "RET") 'bic-mailbox-read-message)
+    (define-key map "t" 'bic-message-toggle-header)
     map))
 
 (define-derived-mode bic-message-mode gnus-article-mode "BIC Message"
@@ -1919,6 +1921,8 @@ key\taction
 \\[message-reply]\tReply
 \\[message-wide-reply]\tReply all
 \\[message-forward]\tForward
+
+\\[bic-message-toggle-header]\tToggle displaying full message headers
 
 All key bindings:
 
@@ -1941,6 +1945,13 @@ All key bindings:
 		      (bic--sanitize-mailbox-name mailbox)
 		      (expand-file-name
 		       account bic-data-directory)))
+      ;; Keep the original text of the message in a separate buffer.
+      (let ((dir bic--dir))
+	(with-current-buffer (get-buffer-create gnus-original-article-buffer)
+	  (erase-buffer)
+	  (remove-overlays)
+	  (insert-file-contents (expand-file-name msg dir)
+				nil nil nil t)))
       (erase-buffer)
       (remove-overlays)
       ;; XXX: ideally we should use insert-file-contents-literally
@@ -1954,6 +1965,14 @@ All key bindings:
       (gnus-article-prepare-display))
     (let ((window (display-buffer (current-buffer))))
       (set-window-start window (point-min)))))
+
+(defun bic-message-toggle-header (&optional arg)
+  "Show the headers if they are hidden, or hide them if they are shown.
+If ARG is a positive number, show the entire header.
+If ARG is a negative number, hide the unwanted header lines."
+  (interactive "P")
+  (cl-letf (((symbol-function 'gnus-set-mode-line) #'ignore))
+    (gnus-summary-toggle-header arg)))
 
 (defun bic-message-mark-read ()
   "Mark the message at point as read.
