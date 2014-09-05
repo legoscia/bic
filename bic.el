@@ -550,7 +550,7 @@ ACCOUNT is a string of the form \"username@server\"."
 		 (envelope-entry (member "ENVELOPE" msg-att))
 		 (flags-entry (member "FLAGS" msg-att)))
 
-	    (let ((existing-flags (gethash full-uid flags-table :not-found))
+	    (let ((existing-flags (gethash full-uid flags-table))
 		  (new-flags (cadr flags-entry)))
 	      ;; TODO: do something clever if we don't know the UID
 	      (unless (or (null full-uid)
