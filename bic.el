@@ -639,8 +639,7 @@ ACCOUNT is a string of the form \"username@server\"."
      (bic--maybe-next-task fsm state-data)
      (list :connected state-data))
     (`(:queue-task ,new-task)
-     (plist-put state-data :tasks
-		(append (plist-get state-data :tasks) (list new-task)))
+     (bic--queue-task-if-new state-data new-task)
      (bic--maybe-next-task fsm state-data)
      (list :connected state-data))
     (`(:idle-timeout ,idle-gensym)
