@@ -673,13 +673,9 @@ ACCOUNT is a string of the form \"username@server\"."
      (bic--maybe-next-task fsm state-data)
      (list :connected state-data))
     (`(:ensure-up-to-date ,mailbox)
-     ;; If we have selected the mailbox in question, and are in
-     ;; IDLE there, consider it to be up to date.
-     (unless (and (string= (plist-get state-data :selected) mailbox)
-		  (eq :idle (car-safe (plist-get state-data :current-task))))
-       (bic--queue-task-if-new state-data (list mailbox :download-flags))
-       (bic--queue-task-if-new state-data (list mailbox :download-messages))
-       (bic--maybe-next-task fsm state-data))
+     (bic--queue-task-if-new state-data (list mailbox :download-flags))
+     (bic--queue-task-if-new state-data (list mailbox :download-messages))
+     (bic--maybe-next-task fsm state-data)
      (list :connected state-data))
     (:activate
      ;; Nothing to do.
