@@ -70,8 +70,7 @@ directory; you can remove that if you want.
 - There is currently no way to access messages older than 30 days,
   unless they are unread or flagged.
 - It doesn't detect that messages have been deleted on the server.
-- Messages are not marked as answered or forwarded when you reply to
-  them or forward them.
+- Messages are not marked forwarded when you forward them.
 - There is currently no way to copy, move or delete messages.
 - Messages are not threaded.
 - There is no search function.

@@ -1893,8 +1893,8 @@ With prefix argument, don't mark message as read."
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map special-mode-map)
     ;; XXX: mark as replied, insert body, etc
-    (define-key map "r" 'message-reply)
-    (define-key map "f" 'message-wide-reply)
+    (define-key map "r" 'bic-message-reply)
+    (define-key map "f" 'bic-message-wide-reply)
     (define-key map (kbd "C-c C-f") 'message-forward)
     (define-key map "d" 'bic-message-mark-read)
     (define-key map (kbd "M-u") 'bic-message-mark-unread)
@@ -2007,6 +2007,28 @@ Also mark it as read."
     (fsm-send
      fsm
      (list :flags bic--current-mailbox full-uid flags-to-add flags-to-remove))))
+
+(defun bic-message-reply (&optional wide)
+  "Compose a reply to the current message."
+  (interactive)
+  (unless (derived-mode-p 'bic-message-mode)
+    (user-error "Not in message buffer"))
+  (let ((full-uid (bic--find-message-at-point))
+	(mailbox bic--current-mailbox)
+	(account bic--current-account))
+    (set-buffer gnus-original-article-buffer)
+    (message-reply nil wide)
+    (add-to-list
+     'message-send-actions
+     (lambda ()
+       (fsm-send
+	(bic--find-account account)
+	(list :flags mailbox full-uid '("\\Answered") ()))))))
+
+(defun bic-message-wide-reply ()
+  "Compose a wide reply (\"reply all\") to the current message."
+  (interactive)
+  (bic-message-reply t))
 
 (defun bic--find-message-at-point ()
   "Find UID of message at point.
