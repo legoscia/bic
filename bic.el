@@ -543,7 +543,6 @@ ACCOUNT is a string of the form \"username@server\"."
 	    (coding-system-for-write 'binary))
        (pcase msg
 	 (`(,_seq "FETCH" ,msg-att)
-	  ;; TODO: check for mailbox view
 	  (let* ((uid-entry (member "UID" msg-att))
 		 (uid (cadr uid-entry))
 		 (full-uid (when uid-entry (concat uidvalidity "-" uid)))
