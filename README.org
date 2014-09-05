@@ -79,6 +79,9 @@ directory; you can remove that if you want.
   hard-coded to 42.
 - If the server doesn't support =IDLE=, messages will be downloaded
   rather infrequently.
+- If you enter the wrong password, BIC will repeatedly try to connect
+  using the incorrect password until you run =M-x
+  auth-source-forget-all-cached=.
 
 ** Troubleshooting
 
