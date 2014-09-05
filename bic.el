@@ -1751,9 +1751,9 @@ If there is no such buffer, return nil."
 	    (col 3) (bic-mailbox--format-date date)
 	    (col 16) "[ "
 	    (truncate-string-to-width
-	     (if (not (string= (car from) "NIL"))
-		 (rfc2047-decode-string (car from))
-	       (concat (nth 2 from) "@" (nth 3 from)))
+	     (if (member (car from) '("" "NIL"))
+		 (concat (nth 2 from) "@" (nth 3 from))
+	       (rfc2047-decode-string (car from)))
 	     20)
 	    (col 39) "] "
 	    (rfc2047-decode-string subject))
