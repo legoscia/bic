@@ -1945,7 +1945,9 @@ All key bindings:
 	  (erase-buffer)
 	  (remove-overlays)
 	  (insert-file-contents (expand-file-name msg dir)
-				nil nil nil t)))
+				nil nil nil t)
+	  ;; "Original" but still decoded.
+	  (run-hooks 'gnus-article-decode-hook)))
       (erase-buffer)
       (remove-overlays)
       ;; XXX: ideally we should use insert-file-contents-literally
