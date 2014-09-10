@@ -1891,7 +1891,7 @@ With prefix argument, don't mark message as read."
     ;; XXX: mark as replied, insert body, etc
     (define-key map "r" 'bic-message-reply)
     (define-key map "f" 'bic-message-wide-reply)
-    (define-key map (kbd "C-c C-f") 'message-forward)
+    (define-key map (kbd "C-c C-f") 'bic-message-forward)
     (define-key map "d" 'bic-message-mark-read)
     (define-key map (kbd "M-u") 'bic-message-mark-unread)
     (define-key map "!" 'bic-message-mark-flagged)
@@ -1914,7 +1914,7 @@ key\taction
 
 \\[bic-message-reply]\tReply
 \\[bic-message-wide-reply]\tReply all
-\\[message-forward]\tForward
+\\[bic-message-forward]\tForward
 
 \\[bic-message-toggle-header]\tToggle displaying full message headers
 
@@ -2025,6 +2025,23 @@ Also mark it as read."
   "Compose a wide reply (\"reply all\") to the current message."
   (interactive)
   (bic-message-reply t))
+
+(defun bic-message-forward ()
+  "Forward the current message."
+  (interactive)
+  (unless (derived-mode-p 'bic-message-mode)
+    (user-error "Not in message buffer"))
+  (let ((full-uid (bic--find-message-at-point))
+	(mailbox bic--current-mailbox)
+	(account bic--current-account))
+    (set-buffer gnus-original-article-buffer)
+    (message-forward)
+    (add-to-list
+     'message-send-actions
+     (lambda ()
+       (fsm-send
+	(bic--find-account account)
+	(list :flags mailbox full-uid '("$Forwarded") ()))))))
 
 (defun bic--find-message-at-point ()
   "Find UID of message at point.
