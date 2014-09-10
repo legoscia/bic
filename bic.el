@@ -1912,8 +1912,8 @@ key\taction
 \\[bic-message-mark-unread]\tMark unread
 \\[bic-message-mark-flagged]\tMark as \"flagged\"
 
-\\[message-reply]\tReply
-\\[message-wide-reply]\tReply all
+\\[bic-message-reply]\tReply
+\\[bic-message-wide-reply]\tReply all
 \\[message-forward]\tForward
 
 \\[bic-message-toggle-header]\tToggle displaying full message headers
