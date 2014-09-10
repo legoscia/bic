@@ -1899,6 +1899,7 @@ With prefix argument, don't mark message as read."
     (define-key map "\M-$" 'bic-message-mark-not-spam)
     ;; (define-key map (kbd "RET") 'bic-mailbox-read-message)
     (define-key map "t" 'bic-message-toggle-header)
+    (define-key map "W" 'gnus-summary-wash-map)
     map))
 
 (define-derived-mode bic-message-mode gnus-article-mode "BIC Message"
