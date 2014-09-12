@@ -1013,6 +1013,15 @@ destructively, and returns it."
     (_
      (error "Cannot expand literals in %S" sexp))))
 
+(defun bic-number-to-string (number)
+  "Like `number-to-string', but always treats NUMBER as an integer.
+If NUMBER is a float, it is truncated to the integer closest to 0.
+This works correctly even if NUMBER is outside Emacs' integer range."
+  (if (integerp number)
+      (number-to-string number)
+    (let ((float-string (number-to-string number)))
+      (substring float-string 0 (cl-position ?. float-string)))))
+
 (defun bic-format-ranges (ranges)
   "Format RANGES as a sequence-set.
 RANGES is either a single cons, (START . END), or a list
@@ -1021,25 +1030,20 @@ This is the type of value returned by `gnus-compress-sequence'.
 
 All numbers may be either integers or floats.  They will be
 formatted as integers."
-  (cl-flet ((s (number)
-	       (if (integerp number)
-		   (number-to-string number)
-		 (let ((float-string (number-to-string number)))
-		   (substring float-string 0 (cl-position ?. float-string))))))
-    (pcase ranges
-      (`(,(and (pred numberp) start) . ,(and (pred numberp) end))
-       (concat (s start) ":" (s end)))
-      (_
-       (let (parts)
-	 (dolist (range-or-number ranges)
-	   (pcase range-or-number
-	     (`(,(and (pred numberp) start) . ,(and (pred numberp) end))
-	      (push (concat (s start) ":" (s end)) parts))
-	     ((pred numberp)
-	      (push (s range-or-number) parts))
-	     (_
-	      (error "Invalid number or range: %S" range-or-number))))
-	 (mapconcat 'identity (nreverse parts) ","))))))
+  (pcase ranges
+    (`(,(and (pred numberp) start) . ,(and (pred numberp) end))
+     (concat (bic-number-to-string start) ":" (bic-number-to-string end)))
+    (_
+     (let (parts)
+       (dolist (range-or-number ranges)
+	 (pcase range-or-number
+	   (`(,(and (pred numberp) start) . ,(and (pred numberp) end))
+	    (push (concat (bic-number-to-string start) ":" (bic-number-to-string end)) parts))
+	   ((pred numberp)
+	    (push (bic-number-to-string range-or-number) parts))
+	   (_
+	    (error "Invalid number or range: %S" range-or-number))))
+       (mapconcat 'identity (nreverse parts) ",")))))
 
 (defun bic-connection--has-capability (capability connection)
   "Return true if CONNECTION reported CAPABILITY.
