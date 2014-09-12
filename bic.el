@@ -36,6 +36,7 @@
 (require 'gnus-srvr)
 (require 'hex-util)
 (require 'tree-widget)
+(require 'avl-tree)
 
 (defgroup bic nil
   "Settings for the Best IMAP Client."
@@ -148,6 +149,7 @@ ACCOUNT is a string of the form \"username@server\"."
 			      :address address
 			      :dir dir
 			      :overview-per-mailbox (make-hash-table :test 'equal)
+			      :uid-tree-per-mailbox (make-hash-table :test 'equal)
 			      :flags-per-mailbox (make-hash-table :test 'equal))))
 	    (if (file-directory-p dir)
 		(list :existing state-data)
@@ -615,9 +617,10 @@ ACCOUNT is a string of the form \"username@server\"."
 	  (message "Unexpected response to FETCH request: %S" other)))
        (list :connected state-data)))
     (`(:get-mailbox-tables ,mailbox)
-     (funcall callback
-	      (list (bic--read-overview state-data mailbox)
-		    (bic--read-flags-table state-data mailbox)))
+     (let ((overview-table (bic--read-overview state-data mailbox))
+	   (flags-table (bic--read-flags-table state-data mailbox))
+	   (uid-tree (gethash mailbox (plist-get state-data :uid-tree-per-mailbox))))
+       (funcall callback (list overview-table flags-table uid-tree)))
      (list :connected state-data))
     (`(:task-finished ,task)
      ;; Check that this actually is the task we think we're doing
@@ -716,9 +719,10 @@ ACCOUNT is a string of the form \"username@server\"."
   (fsm state-data event callback)
   (pcase event
     (`(:get-mailbox-tables ,mailbox)
-     (funcall callback
-	      (list (bic--read-overview state-data mailbox)
-		    (bic--read-flags-table state-data mailbox)))
+     (let ((overview-table (bic--read-overview state-data mailbox))
+	   (flags-table (bic--read-flags-table state-data mailbox))
+	   (uid-tree (gethash mailbox (plist-get state-data :uid-tree-per-mailbox))))
+       (funcall callback (list overview-table flags-table uid-tree)))
      (list :disconnected state-data))
     (`(:flags ,mailbox ,full-uid ,flags-to-add ,flags-to-remove)
      (bic--write-pending-flags mailbox full-uid flags-to-add flags-to-remove state-data)
@@ -1294,25 +1298,38 @@ It also includes underscore, which is used as an escape character.")
      )))
 
 (defun bic--read-overview (state-data mailbox-name)
-  (let ((overview-table (gethash mailbox-name (plist-get state-data :overview-per-mailbox)))
-	(overview-file (expand-file-name "overview" (bic--mailbox-dir state-data mailbox-name))))
+  (let* ((dir (bic--mailbox-dir state-data mailbox-name))
+	 (overview-table (gethash mailbox-name (plist-get state-data :overview-per-mailbox)))
+	 (uid-tree (gethash mailbox-name (plist-get state-data :uid-tree-per-mailbox)))
+	 (overview-file (expand-file-name "overview" dir))
+	 (uidvalidity-file (expand-file-name "uidvalidity" dir))
+	 (uidvalidity (with-temp-buffer
+			(insert-file-contents-literally uidvalidity-file)
+			(buffer-string)))
+	 (regexp (concat "^\\(" uidvalidity "-\\([0-9]+\\)\\) \\(.*\\)$")))
     (when (null overview-table)
       (setq overview-table (make-hash-table :test 'equal))
       (puthash mailbox-name overview-table (plist-get state-data :overview-per-mailbox))
+      (setq uid-tree (avl-tree-create #'<))
+      (puthash mailbox-name uid-tree (plist-get state-data :uid-tree-per-mailbox))
 
       ;; TODO: are there situations where we need to reread the overview file?
       (when (file-exists-p overview-file)
 	(with-temp-buffer
 	  (insert-file-contents-literally overview-file)
 	  (goto-char (point-min))
-	  (while (search-forward-regexp
-		  (concat "^\\([0-9]+-[0-9]+\\) \\(.*\\)$")
-		  nil t)
+	  (while (search-forward-regexp regexp nil t)
 	    (let ((full-uid (match-string 1))
-		  (rest (match-string 2)))
+		  (bare-uid (string-to-number (match-string 2)))
+		  (rest (match-string 3)))
 	      (pcase-let
 		  ((`(,overview . ,_) (read-from-string rest)))
-		(puthash full-uid overview overview-table)))))))
+		(if (eq :expunged overview)
+		    (progn
+		      (remhash full-uid overview-table)
+		      (avl-tree-delete uid-tree bare-uid))
+		  (puthash full-uid overview overview-table)
+		  (avl-tree-enter uid-tree bare-uid))))))))
     overview-table))
 
 (defun bic--read-flags-table (state-data mailbox-name)
@@ -1629,6 +1646,8 @@ user expects."
 
 (defvar-local bic-mailbox--flags-table nil)
 
+(defvar-local bic-mailbox--uid-tree nil)
+
 (defun bic-mailbox-open (account mailbox)
   (interactive
    (let* ((account (bic--read-existing-account "IMAP account: " t))
@@ -1712,23 +1731,23 @@ If there is no such buffer, return nil."
 	    (with-temp-buffer
 	      (insert-file-contents-literally uidvalidity-file)
 	      (buffer-string))))
-	 (messages
-	  (when uidvalidity
-	    (directory-files bic--dir nil
-			     (concat "^" uidvalidity "-[0-9]+$"))))
 	 (buffer (current-buffer)))
     (fsm-send
      (bic--find-account bic--current-account)
      (list :get-mailbox-tables bic--current-mailbox)
      (lambda (tables)
        (with-current-buffer buffer
-	 (setq bic-mailbox--hashtable (car tables))
-	 (setq bic-mailbox--flags-table (cadr tables))
+	 (setq bic-mailbox--hashtable (cl-first tables))
+	 (setq bic-mailbox--flags-table (cl-second tables))
+	 (setq bic-mailbox--uid-tree (cl-third tables))
 	 (let ((inhibit-read-only t))
-	   (dolist (msg messages)
-	     (puthash
-	      msg (ewoc-enter-last bic-mailbox--ewoc msg)
-	      bic-mailbox--ewoc-nodes-table))))))
+	   (avl-tree-mapc
+	    (lambda (bare-uid)
+	      (let ((full-uid (concat uidvalidity "-" (bic-number-to-string bare-uid))))
+		(puthash
+		 full-uid (ewoc-enter-last bic-mailbox--ewoc full-uid)
+		 bic-mailbox--ewoc-nodes-table)))
+	    bic-mailbox--uid-tree)))))
     (fsm-send
      (bic--find-account bic--current-account)
      (list :ensure-up-to-date bic--current-mailbox))))
