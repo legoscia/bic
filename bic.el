@@ -412,6 +412,9 @@ ACCOUNT is a string of the form \"username@server\"."
        (list :disconnected state-data))
       (`(:authenticated ,(pred (eq our-connection)))
        (list :connected state-data))
+      (`(:flags ,mailbox ,full-uid ,flags-to-add ,flags-to-remove)
+       (bic--write-pending-flags mailbox full-uid flags-to-add flags-to-remove state-data)
+       (list :existing state-data))
       (:deactivate
        (plist-put state-data :deactivated t)
        (fsm-send our-connection :stop)
