@@ -543,6 +543,7 @@ ACCOUNT is a string of the form \"username@server\"."
      (let* ((dir (bic--mailbox-dir state-data selected-mailbox))
 	    (overview-file (expand-file-name "overview" dir))
 	    (overview-table (bic--read-overview state-data selected-mailbox))
+	    (uid-tree (gethash selected-mailbox (plist-get state-data :uid-tree-per-mailbox)))
 	    (flags-file (expand-file-name "flags" dir))
 	    (flags-table (bic--read-flags-table state-data selected-mailbox))
 	    (coding-system-for-write 'binary))
@@ -604,7 +605,8 @@ ACCOUNT is a string of the form \"username@server\"."
 		   (insert "\n")
 		   (write-region (point-min) (point-max)
 				 overview-file :append :silent))
-		 (puthash full-uid envelope-data overview-table)))
+		 (puthash full-uid envelope-data overview-table)
+		 (avl-tree-enter uid-tree (string-to-number uid))))
 	      (`("BODY" . ,other)
 	       (warn "Unexpected BODY in FETCH response: %S" other))
 	      (other
