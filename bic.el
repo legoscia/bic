@@ -894,11 +894,18 @@ It also includes underscore, which is used as an escape character.")
 			 (lambda (x)
 			   (and (eq (car-safe x) :ok)
 				(string= type (plist-get (cdr x) :code))))
+			 select-data))
+	    (find-entry-number-first (type)
+			(cl-find-if
+			 (lambda (x)
+			   (and (stringp (cl-second x))
+				(string= type (cl-second x))))
 			 select-data)))
     (let ((dir (bic--mailbox-dir state-data mailbox-name))
 	  (uidvalidity-entry (find-entry "UIDVALIDITY"))
 	  (highestmodseq-entry (find-entry "HIGHESTMODSEQ"))
-	  (nomodseq-entry (find-entry "NOMODSEQ")))
+	  (nomodseq-entry (find-entry "NOMODSEQ"))
+	  (exists-entry (find-entry-number-first "EXISTS")))
       (if uidvalidity-entry
 	  (let ((uidvalidity-file (expand-file-name "uidvalidity" dir))
 		(modseq-file (expand-file-name "modseq" dir))
@@ -921,6 +928,12 @@ It also includes underscore, which is used as an escape character.")
 			  (buffer-string) uidvalidity)))
 	      (message "Fresh UIDVALIDITY value: %S" uidvalidity-entry)
 	      (bic--write-string-to-file uidvalidity uidvalidity-file))
+
+	    (if (null exists-entry)
+		(warn "No EXISTS response found for mailbox %s of %s"
+		      mailbox-name (plist-get state-data :address))
+	      (plist-put (cdr mailbox-entry) :exists (string-to-number (cl-first exists-entry))))
+
 	    (cond
 	     (highestmodseq-entry
 	      (let ((old-modseq
@@ -1185,6 +1198,86 @@ It also includes underscore, which is used as an escape character.")
 					 uidvalidity))))))
 	 ;; Nothing to request - we're done.
 	 (fsm-send fsm (list :task-finished task)))))
+    (`(,mailbox :expunge-messages . ,sequence-numbers)
+     (cl-assert (string= mailbox (plist-get state-data :selected)))
+     ;; Since we don't (yet?) maintain a mapping of sequence numbers
+     ;; to UIDs, we need to issue a SEARCH command to find out which
+     ;; messages are affected.
+     (setq sequence-numbers (mapcar #'string-to-number sequence-numbers))
+     (let* ((connection (plist-get state-data :connection))
+	    (mailbox-plist (cdr (assoc mailbox (plist-get state-data :mailboxes))))
+	    (mailbox-uidvalidity (plist-get mailbox-plist :uidvalidity))
+	    (exists (plist-get mailbox-plist :exists))
+	    (overview-table (bic--read-overview state-data mailbox))
+	    (uid-tree (gethash mailbox (plist-get state-data :uid-tree-per-mailbox)))
+	    (dir (bic--mailbox-dir state-data mailbox))
+	    (overview-file (expand-file-name "overview" dir))
+	    ;; XXX: split list if numbers have gaps?
+	    (min (apply #'min sequence-numbers))
+	    (max (apply #'max sequence-numbers))
+	    (highest-expunged (>= max exists)))
+       (bic-command
+	connection
+	(format "UID SEARCH %s:%s"
+		;; Ask for all message sequence numbers starting from
+		;; one below the lowest that has been expunged.  If
+		;; the lowest expunged message is 1, there is nothing
+		;; lower so go with 1.
+		(bic-number-to-string (max (1- min) 1))
+		;; If the highest numbered message in the mailbox
+		;; seems to have been expunged, search for "*" just to
+		;; be sure.
+		(if highest-expunged
+		    "*"
+		  (bic-number-to-string max)))
+	(lambda (search-response)
+	  (pcase search-response
+	    (`(:ok ,_ ,search-data)
+	     (let* ((search-results (cdr (assoc "SEARCH" search-data)))
+		    (sorted (sort (mapcar #'string-to-number search-results) #'<))
+		    ;; If the lowest expunged message was 1, any UID
+		    ;; from the earliest we know about could have been
+		    ;; expunged.  TODO: this could be rather
+		    ;; inefficient.
+		    (min-uid (if (= min 1) (avl-tree-first uid-tree) (cl-first sorted)))
+		    ;; If the highest expunged message is greater than
+		    ;; the number of messages in the mailbox, then the
+		    ;; results contain the highest UID present in the
+		    ;; mailbox (since we asked for it above).  Thus,
+		    ;; check all messages in mailbox.
+		    (max-uid (if highest-expunged
+				 (avl-tree-last uid-tree)
+			       (car (last sorted)))))
+	       ;; TODO: It's a bit weird to use an index to loop over
+	       ;; a hashtable.  Ideally, we'd want to loop over part
+	       ;; of the AVL tree, but it seems there is no such
+	       ;; function.
+	       (cl-loop
+		for uid from min-uid to max-uid
+		do (if (and sorted (= uid (car sorted)))
+		       ;; This UID is present in the search results,
+		       ;; thus this message still exists.
+		       (pop sorted)
+		     (let ((full-uid (concat mailbox-uidvalidity "-" (bic-number-to-string uid))))
+		       (when (gethash full-uid overview-table)
+			 ;; This UID is not present in the search
+			 ;; results, but present in our hashtable.
+			 ;; Thus it is a message that we know about,
+			 ;; that has been expunged.
+			 (with-temp-buffer
+			   (insert full-uid " :expunged\n")
+			   (write-region (point-min) (point-max)
+					 overview-file :append :silent))
+			 (remhash full-uid overview-table)
+			 (avl-tree-delete uid-tree uid)
+			 (bic-mailbox--maybe-remove-message
+			  (plist-get state-data :address)
+			  mailbox full-uid)
+			 ;; TODO: remove file on disk once this works properly
+			 ))))))
+	    (search-error
+	     (warn "Error in response to SEARCH: %S" search-error)))
+	  (fsm-send fsm (list :task-finished task))))))
     (`(,_ :logout)
      ;; No need for a callback - this is the last task.
      (bic-command (plist-get state-data :connection) "LOGOUT" #'ignore))
@@ -1195,7 +1288,10 @@ It also includes underscore, which is used as an escape character.")
   (let* ((idle-gensym (cl-gensym "IDLE-"))
 	 (timer (run-with-timer (* 29 60) nil
 				(lambda ()
-				  (fsm-send fsm (list :idle-timeout idle-gensym))))))
+				  (fsm-send fsm (list :idle-timeout idle-gensym)))))
+	 (mailbox (plist-get state-data :selected))
+	 (mailbox-plist (cdr (assoc mailbox (plist-get state-data :mailboxes))))
+	 (expunge-task (list mailbox :expunge-messages)))
     (plist-put state-data :current-task (list :idle idle-gensym timer))
     (bic-command
      (plist-get state-data :connection)
@@ -1214,17 +1310,29 @@ It also includes underscore, which is used as an escape character.")
 		 (plist-get (cdr ok-response) :text)))))
       (list
        1 "EXISTS"
-       (lambda (_exists-response)
+       (lambda (exists-response)
+	 (plist-put mailbox-plist :exists (string-to-number (cl-first exists-response)))
 	 ;; TODO: just fetch new messages, as we know their
 	 ;; sequence numbers.
 	 (fsm-send
 	  fsm
-	  `(:queue-task (,(plist-get state-data :selected) :download-messages)))))
+	  `(:queue-task (,mailbox :download-messages)))))
       ;; We don't really care about the \Recent flag.  Assuming
       ;; that the server always sends EXISTS along with RECENT,
       ;; we can ignore this.
       (list 1 "RECENT" #'ignore)
-      (list 0 "FLAGS" #'ignore)))))
+      (list 0 "FLAGS" #'ignore)
+      ;; A somewhat complicated dance to ensure that after receiving
+      ;; EXPUNGE responses, we'll exit IDLE, and run the expunge task
+      ;; once and only once, with all received message sequence
+      ;; numbers.  Thus we build the task using `nconc', and send it
+      ;; off with `:queue-task', which skips duplicate tasks.
+      (list 1 "EXPUNGE"
+	    (lambda (expunge-response)
+	      (nconc expunge-task (list (cl-first expunge-response)))
+	      (fsm-send
+	       fsm
+	       `(:queue-task ,expunge-task))))))))
 
 (defun bic--idle-done (fsm state-data)
   (let ((idle-gensym (cl-second (plist-get state-data :current-task))))
@@ -1903,6 +2011,23 @@ With prefix argument, don't mark message as read."
 	   (unwind-protect
 	       (ewoc-invalidate bic-mailbox--ewoc node)
 	     (goto-char old-point))))))))
+
+(defun bic-mailbox--maybe-remove-message (address mailbox full-uid)
+  (pcase (bic-mailbox--find-buffer address mailbox)
+    ((and (pred bufferp) mailbox-buffer)
+     (run-with-idle-timer
+      0.1 nil 'bic-mailbox--remove-message mailbox-buffer full-uid))))
+
+(defun bic-mailbox--remove-message (buffer full-uid)
+  (with-current-buffer buffer
+    (pcase (gethash full-uid bic-mailbox--ewoc-nodes-table)
+      (`nil
+       ;; Not found; nothing to do.
+       )
+      (node
+       (when (ewoc-location node)
+	 (let ((inhibit-read-only t))
+	   (ewoc-delete bic-mailbox--ewoc node)))))))
 
 ;;; Message view
 
