@@ -1967,17 +1967,18 @@ All key bindings:
 	(with-current-buffer (get-buffer-create gnus-original-article-buffer)
 	  (erase-buffer)
 	  (remove-overlays)
-	  (insert-file-contents (expand-file-name msg dir)
-				nil nil nil t)
+	  (insert-file-contents-literally
+	   (expand-file-name msg dir) nil nil nil t)
+	  (decode-coding-region (point-min) (point-max) 'raw-text-dos)
 	  ;; "Original" but still decoded.
 	  (run-hooks 'gnus-article-decode-hook)))
       (erase-buffer)
       (remove-overlays)
-      ;; XXX: ideally we should use insert-file-contents-literally
-      ;; here, but gnus-article-mode gets very confused by our CRLF
-      ;; line endings.
-      (insert-file-contents (expand-file-name msg bic--dir)
-			    nil nil nil t)
+      ;; NB: gnus-article-mode gets very confused by CRLF line endings.
+      ;; TODO: be more clever about what we decode.  Binary attachments?
+      (insert-file-contents-literally
+       (expand-file-name msg bic--dir) nil nil nil t)
+      (decode-coding-region (point-min) (point-max) 'raw-text-dos)
       ;; Gnus already does a fine job displaying messages, so we might
       ;; as well piggy-back on that:
       (run-hooks 'gnus-article-decode-hook)
