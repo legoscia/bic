@@ -6,10 +6,10 @@ principles:
 - *asynchronicity*: the Emacs user interface should be blocked as
   little as possible.  Any long-running commands should be run in the
   background.
-- *minimal configuration*: you should be able to *just read
-  your mail* without adding half a page of configuration variable
+- *minimal configuration*: you should be able to /just read
+  your mail/ without adding half a page of configuration variable
   settings to your =.emacs= file, or installing and configuring any
-  external programs.
+  external programs.  /Life is too short./
 - *offline is online*: the client should have the same behaviour even
   if the connection to the mail server is lost, and changes should be
   synchronised seamlessly once the connection is reestablished.
