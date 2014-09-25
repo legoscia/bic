@@ -1917,6 +1917,8 @@ If there is no such buffer, return nil."
 	   (cond
 	    ((member "\\Answered" flags)
 	     ?A)
+	    ((member "$Forwarded" flags)
+	     ?F)
 	    (t
 	     ?\s)))
    'help-echo (concat "Flags: "
