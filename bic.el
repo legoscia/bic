@@ -888,6 +888,15 @@ It also includes underscore, which is used as an escape character.")
      #'run-hook-with-args 'bic-account-mailbox-update-functions
      address nil nil)))
 
+(defun bic--update-mailbox-status (address mailbox new-plist)
+  (let ((table (gethash address bic-account-mailbox-table)))
+    (puthash mailbox new-plist table)
+    ;; Run in timer, to isolate errors.
+    (run-with-timer
+     0 nil
+     #'run-hook-with-args 'bic-account-mailbox-update-functions
+     address mailbox new-plist)))
+
 (defun bic--handle-select-response (state-data mailbox-name select-data)
   (cl-flet ((find-entry (type)
 			(cl-find-if
@@ -1106,17 +1115,37 @@ It also includes underscore, which is used as an escape character.")
 					      one-fetch-response
 					      mailbox-uidvalidity))))))))
 	    flag-combinations)))))
-    (`(,mailbox :download-messages)
+    (`(,mailbox :download-messages . ,_options)
      ;; At this point, we should have selected the mailbox already.
      (cl-assert (string= mailbox (plist-get state-data :selected)))
-     (bic-command
-      (plist-get state-data :connection)
-      (concat "UID SEARCH OR OR UNSEEN FLAGGED SINCE "
-	      (bic--date-text
-	       (time-subtract (current-time)
-			      (days-to-time bic-backlog-days))))
-      (lambda (search-response)
-	(bic--handle-search-response fsm state-data task search-response))))
+     ;; TODO: do something clever with the limit, so we don't need to
+     ;; dig through too much data.
+     (let (unseen-flagged-search-data recent-search-data)
+       (bic-command
+	(plist-get state-data :connection)
+	"UID SEARCH OR UNSEEN FLAGGED"
+	(lambda (search-response)
+	  (pcase search-response
+	    (`(:ok ,_ ,search-data)
+	     (setq unseen-flagged-search-data search-data))
+	    (other
+	     (warn "SEARCH for unseen/flagged messages failed: %S" other)))))
+       (bic-command
+	(plist-get state-data :connection)
+	(concat "UID SEARCH SEEN UNFLAGGED SINCE "
+		(bic--date-text
+		 (time-subtract (current-time)
+				(days-to-time bic-backlog-days))))
+	(lambda (search-response)
+	  (pcase search-response
+	    (`(:ok ,_ ,search-data)
+	     (setq recent-search-data search-data))
+	    (other
+	     (warn "SEARCH for recent messages failed: %S" other)))
+	  ;; At this point, both requests should have finished.
+	  (bic--handle-search-response
+	   fsm state-data task
+	   unseen-flagged-search-data recent-search-data)))))
     (`(,mailbox :download-flags)
      (cl-assert (string= mailbox (plist-get state-data :selected)))
      (let* ((connection (plist-get state-data :connection))
@@ -1350,26 +1379,97 @@ It also includes underscore, which is used as an escape character.")
 	((string= s1 s2) nil)
 	(t (string-lessp s1 s2))))
 
-(defun bic--handle-search-response (fsm state-data task search-response)
+(defun bic--handle-search-response
+    (fsm state-data task unseen-flagged-search-data recent-search-data)
   ;; Handle search response by fetching the body of all messages that
   ;; we don't have yet.
-  (pcase search-response
-    (`(:ok ,_ ,search-data)
-     (let* ((search-results (cdr (assoc "SEARCH" search-data)))
-	    (mailbox (car task))
-	    (uidvalidity
-	     (plist-get (cdr (assoc mailbox (plist-get state-data :mailboxes)))
-			:uidvalidity))
-	    (overview-table (bic--read-overview state-data mailbox))
-	    ;; Don't fetch messages we've already downloaded.
-	    ;; TODO: detect and react to flag changes
-	    ;; TODO: is it possible that we have the envelope, but not the body?
-	    (filtered-search-results
-	     (cl-remove-if
-	      (lambda (uid) (gethash (concat uidvalidity "-" uid) overview-table))
-	      search-results)))
-       (if (null filtered-search-results)
-	   (fsm-send fsm (list :task-finished task))
+  (let* ((unseen-flagged-search-results (cdr (assoc "SEARCH" unseen-flagged-search-data)))
+	 (unseen-flagged-length (length unseen-flagged-search-results))
+	 (recent-search-results (cdr (assoc "SEARCH" recent-search-data)))
+	 (recent-length (length recent-search-results))
+	 (mailbox (car task))
+	 (uidvalidity
+	  (plist-get (cdr (assoc mailbox (plist-get state-data :mailboxes)))
+		     :uidvalidity))
+	 (overview-table (bic--read-overview state-data mailbox))
+	 (limit (plist-get (cddr task) :limit))
+	 fetch-these not-these-unseen not-these-recent
+	 (mailbox-table (gethash (plist-get state-data :address) bic-account-mailbox-table))
+	 (mailbox-entry (gethash mailbox mailbox-table)))
+    (cond
+     ((and (numberp limit) (> unseen-flagged-length limit))
+      (let* ((sorted (sort (mapcar #'string-to-number unseen-flagged-search-results) '<))
+	     (cut-point (last sorted (1+ limit))))
+	(setq fetch-these (cdr cut-point))
+	(setf (cdr cut-point) nil)
+	(setq not-these-unseen sorted)
+	(setq not-these-recent (mapcar #'string-to-number recent-search-results))))
+     ((and (numberp limit) (> (+ unseen-flagged-length recent-length) limit))
+      ;; We can fetch all unread/flagged messages, but not all recent
+      ;; ones.
+      (let* ((unseen-as-numbers
+	      (mapcar #'string-to-number unseen-flagged-search-results))
+	     (sorted-recent
+	      (sort (mapcar #'string-to-number recent-search-results) '<))
+	     (cut-point (last sorted-recent
+			      (1+ (- limit unseen-flagged-length)))))
+	(setq fetch-these
+	      (append
+	       (cdr cut-point)
+	       unseen-as-numbers))
+	(setf (cdr cut-point) nil)
+	(setq not-these-unseen nil)
+	(setq not-these-recent sorted-recent)))
+     (t
+      (setq fetch-these
+	    (sort
+	     (cl-remove-duplicates
+	      (mapcar #'string-to-number
+		      (append unseen-flagged-search-results recent-search-results)))
+	     '<))))
+
+    (cl-flet
+	((uid-overview (uid)
+		       (gethash (concat uidvalidity "-" (bic-number-to-string uid))
+				overview-table)))
+      ;; Now we know which messages we're not going to fetch because
+      ;; they exceed the limit.  If they haven't been downloaded
+      ;; already, warn about it.
+      ;; (message "Skipping unseen/flagged: %S recent: %S"
+      ;; 	       (cl-remove-if #'uid-overview not-these-unseen)
+      ;; 	       (cl-remove-if #'uid-overview not-these-recent))
+      (cond
+       ((cl-member-if-not #'uid-overview not-these-unseen)
+	(unless (plist-get mailbox-entry :not-all-unread)
+	  (warn "%s (%s) has too many new/flagged messages!  Limiting to the latest %d"
+		mailbox (plist-get state-data :address) limit)
+	  ;; TODO: set a permanent flag
+	  (bic--update-mailbox-status
+	   (plist-get state-data :address)
+	   mailbox
+	   (plist-put mailbox-entry :not-all-unread t))))
+       ((cl-member-if-not #'uid-overview not-these-recent)
+	(unless (plist-get mailbox-entry :not-all-recent)
+	  ;; TODO: improve wording
+	  (warn "%s (%s) has too many recent messages!  Limiting to the latest %d"
+		mailbox (plist-get state-data :address) limit)
+	  ;; TODO: set a permanent flag
+	  (bic--update-mailbox-status
+	   (plist-get state-data :address)
+	   mailbox
+	   (plist-put mailbox-entry :not-all-recent t)))))
+
+      ;; Don't fetch messages we've already downloaded.
+      ;; TODO: is it possible that we have the envelope, but not the body?
+      (pcase (cl-delete-if #'uid-overview fetch-these)
+	(`nil
+	 ;; (let ((filtered-search-results (cl-delete-if #'uid-overview fetch-these)))
+	 ;; 	(if (null filtered-search-results)
+	 ;; 	    (progn
+	 (message "Nothing to fetch from %s for %s"
+		  mailbox (plist-get state-data :address))
+	 (fsm-send fsm (list :task-finished task)))
+	(filtered-search-results
 	 (let* ((count (length filtered-search-results))
 		(progress
 		 (make-progress-reporter
@@ -1384,7 +1484,7 @@ It also includes underscore, which is used as an escape character.")
 	    (concat "UID FETCH "
 		    (bic-format-ranges
 		     (gnus-compress-sequence
-		      (sort (mapcar 'string-to-number filtered-search-results) '<)
+		      (sort filtered-search-results '<)
 		      t))
 		    ;; TODO: Is "BODY.PEEK[]" the right choice?
 		    " (ENVELOPE INTERNALDATE FLAGS BODY.PEEK[])")
@@ -1405,10 +1505,8 @@ It also includes underscore, which is used as an escape character.")
 		     (fsm-send fsm (list :early-fetch-response
 					 mailbox
 					 one-fetch-response
-					 uidvalidity))))))))
-       (list :connected state-data nil))
-     ;; TODO: handle SEARCH error
-     )))
+					 uidvalidity)))))))))))
+  (list :connected state-data nil))
 
 (defun bic--read-overview (state-data mailbox-name)
   (let* ((dir (bic--mailbox-dir state-data mailbox-name))
@@ -1701,7 +1799,16 @@ user expects."
 	    :notify (lambda (&rest _ignore)
 		      (bic-mailbox-open account-name (car mailbox-data)))
 	    :tag "42"
-	    :format "%[%v%] (%t)\n"
+	    :format (concat
+		     "%[%v%] (%t)"
+		     (cond
+		      ((plist-get (cdr mailbox-data) :not-all-unread)
+		       (propertize " [not all unread fetched]"
+				   'face 'error))
+		      ((plist-get (cdr mailbox-data) :not-all-recent)
+		       (propertize " [not all recent fetched]"
+				   'face 'warning)))
+		     "\n")
 	    :button-face (if (cl-member "\\Subscribed" attributes :test #'cl-equalp)
 			     'bic-mailbox-tree-mailbox-subscribed
 			   'bic-mailbox-tree-mailbox-unsubscribed)
@@ -1817,7 +1924,20 @@ If there is no such buffer, return nil."
 (define-derived-mode bic-mailbox-mode special-mode "BIC mailbox"
   "Major mode for IMAP mailboxes accessed by `bic'."
   (setq header-line-format
-	'(" " bic--current-account " " bic--current-mailbox))
+	'(" " bic--current-account " " bic--current-mailbox
+	  (:eval
+	   (let* ((mailbox-table
+		   (gethash bic--current-account bic-account-mailbox-table))
+		  (mailbox-entry
+		   (and (hash-table-p mailbox-table)
+			(gethash bic--current-mailbox mailbox-table))))
+	     (cond
+	      ((plist-get mailbox-entry :not-all-unread)
+	       (propertize " [not all unread fetched]"
+			   'face 'error))
+	      ((plist-get mailbox-entry :not-all-recent)
+	       (propertize " [not all recent fetched]"
+			   'face 'warning)))))))
   (setq-local revert-buffer-function #'bic-mailbox-reload)
   (setq-local truncate-lines t))
 
