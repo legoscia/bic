@@ -1512,12 +1512,7 @@ It also includes underscore, which is used as an escape character.")
   (let* ((dir (bic--mailbox-dir state-data mailbox-name))
 	 (overview-table (gethash mailbox-name (plist-get state-data :overview-per-mailbox)))
 	 (uid-tree (gethash mailbox-name (plist-get state-data :uid-tree-per-mailbox)))
-	 (overview-file (expand-file-name "overview" dir))
-	 (uidvalidity-file (expand-file-name "uidvalidity" dir))
-	 (uidvalidity (with-temp-buffer
-			(insert-file-contents-literally uidvalidity-file)
-			(buffer-string)))
-	 (regexp (concat "^\\(" uidvalidity "-\\([0-9]+\\)\\) \\(.*\\)$")))
+	 (overview-file (expand-file-name "overview" dir)))
     (when (null overview-table)
       (setq overview-table (make-hash-table :test 'equal))
       (puthash mailbox-name overview-table (plist-get state-data :overview-per-mailbox))
@@ -1526,21 +1521,26 @@ It also includes underscore, which is used as an escape character.")
 
       ;; TODO: are there situations where we need to reread the overview file?
       (when (file-exists-p overview-file)
-	(with-temp-buffer
-	  (insert-file-contents-literally overview-file)
-	  (goto-char (point-min))
-	  (while (search-forward-regexp regexp nil t)
-	    (let ((full-uid (match-string 1))
-		  (bare-uid (string-to-number (match-string 2)))
-		  (rest (match-string 3)))
-	      (pcase-let
-		  ((`(,overview . ,_) (read-from-string rest)))
-		(if (eq :expunged overview)
-		    (progn
-		      (remhash full-uid overview-table)
-		      (avl-tree-delete uid-tree bare-uid))
-		  (puthash full-uid overview overview-table)
-		  (avl-tree-enter uid-tree bare-uid))))))))
+	(let* ((uidvalidity-file (expand-file-name "uidvalidity" dir))
+	       (uidvalidity (with-temp-buffer
+			      (insert-file-contents-literally uidvalidity-file)
+			      (buffer-string)))
+	       (regexp (concat "^\\(" uidvalidity "-\\([0-9]+\\)\\) \\(.*\\)$")))
+	  (with-temp-buffer
+	    (insert-file-contents-literally overview-file)
+	    (goto-char (point-min))
+	    (while (search-forward-regexp regexp nil t)
+	      (let ((full-uid (match-string 1))
+		    (bare-uid (string-to-number (match-string 2)))
+		    (rest (match-string 3)))
+		(pcase-let
+		    ((`(,overview . ,_) (read-from-string rest)))
+		  (if (eq :expunged overview)
+		      (progn
+			(remhash full-uid overview-table)
+			(avl-tree-delete uid-tree bare-uid))
+		    (puthash full-uid overview overview-table)
+		    (avl-tree-enter uid-tree bare-uid)))))))))
     overview-table))
 
 (defun bic--read-flags-table (state-data mailbox-name)
