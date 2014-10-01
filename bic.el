@@ -453,14 +453,9 @@ ACCOUNT is a string of the form \"username@server\"."
 	   pending-flags-files))
 	 (pending-flags-tasks (mapcar (lambda (mailbox)
 					(list mailbox :pending-flags))
-				      mailboxes-with-pending-flags))
-	 (download-messages-tasks
-	  ;; TODO: do something clever here.
-	  (list (list "INBOX" :download-flags)
-		(list "INBOX" :download-messages))))
+				      mailboxes-with-pending-flags)))
     ;; NB: Overwriting any existing tasks from previous connections.
-    (plist-put state-data :tasks (append pending-flags-tasks
-					 download-messages-tasks))
+    (plist-put state-data :tasks pending-flags-tasks)
     (plist-put state-data :current-task nil))
 
   (let ((c (plist-get state-data :connection)))
@@ -495,14 +490,13 @@ ACCOUNT is a string of the form \"username@server\"."
 
 	;; XXX: do we _really_ want an extra connection?..  We could
 	;; probably do that later.
-	(bic--maybe-next-task fsm state-data)
 	(list :connected state-data nil))
        ;; TODO: handle LIST error
        ))
     (`(:lsub-response ,lsub-response)
      (pcase lsub-response
        (`(:ok ,_ ,lsub-data)
-	(bic--handle-lsub-response state-data lsub-data)
+	(bic--handle-lsub-response fsm state-data lsub-data)
 	(list :connected state-data nil))
        ;; TODO: handle LSUB error
        ))
@@ -682,7 +676,7 @@ ACCOUNT is a string of the form \"username@server\"."
      (list :connected state-data))
     (`(:ensure-up-to-date ,mailbox)
      (bic--queue-task-if-new state-data (list mailbox :download-flags))
-     (bic--queue-task-if-new state-data (list mailbox :download-messages))
+     (bic--queue-task-if-new state-data (list mailbox :download-messages :limit 100))
      (bic--maybe-next-task fsm state-data)
      (list :connected state-data))
     (:activate
@@ -827,20 +821,25 @@ It also includes underscore, which is used as an escape character.")
 	 (make-directory dir t)
 	 (bic--write-string-to-file
 	  (mapconcat #'identity (plist-get (cdr mailbox) :attributes) "\n")
-	  (expand-file-name "attributes" dir))))
+	  (expand-file-name "attributes" dir))
+	 (when (file-exists-p (expand-file-name "full-sync" dir))
+	   (setf (cdr mailbox)
+		 (plist-put (cdr mailbox) :full-sync t)))))
      mailboxes)
     ;; Modify state-data in place:
     (plist-put state-data :mailboxes mailboxes)
     (bic--store-initial-mailbox-list (plist-get state-data :address) mailboxes)
-    ;; If we didn't get the subscription info already, ask for it with LSUB.
-    (unless subscription-return
+    (if subscription-return
+	;; If we have subscription info, we can sync mailboxes.
+	(bic--sync-mailboxes fsm state-data)
+      ;; If we didn't get the subscription info already, ask for it with LSUB.
       (bic-command
        (plist-get state-data :connection)
        "LSUB \"\" \"*\""
        (lambda (response)
     	 (fsm-send fsm (list :lsub-response response)))))))
 
-(defun bic--handle-lsub-response (state-data lsub-data)
+(defun bic--handle-lsub-response (fsm state-data lsub-data)
   (let ((mailboxes (plist-get state-data :mailboxes))
 	(subscribed-mailboxes
 	 (delq nil
@@ -869,8 +868,33 @@ It also includes underscore, which is used as an escape character.")
 	   (setf (cdr mailbox-entry) (plist-put (cdr mailbox-entry) :attributes new-attributes))
 	   (bic--write-string-to-file
 	    (mapconcat #'identity new-attributes "\n")
-	    (expand-file-name "attributes" (bic--mailbox-dir state-data mailbox))))))
-     mailboxes)))
+	    (expand-file-name "attributes" (bic--mailbox-dir state-data mailbox)))
+	   (bic--update-mailbox-status (plist-get state-data :address)
+				       (car mailbox-entry) (cdr mailbox-entry)))))
+     mailboxes)
+    ;; Now we can finally sync the mailboxes.
+    (bic--sync-mailboxes fsm state-data)))
+
+(defun bic--sync-mailboxes (fsm state-data)
+  (let ((download-messages-tasks
+	 (cl-mapcan
+	  (lambda (mailbox-data)
+	    (let ((attributes (plist-get (cdr mailbox-data) :attributes)))
+	      (cond
+	       ((or (cl-member "\\Noselect" attributes :test #'cl-equalp)
+		    (cl-member "\\NonExistent" attributes :test #'cl-equalp))
+		nil)
+	       ((plist-get (cdr mailbox-data) :full-sync)
+		(list (list (car mailbox-data) :download-flags)
+		      (list (car mailbox-data) :download-messages)))
+	       ((cl-member "\\Subscribed" attributes :test #'cl-equalp)
+		(list (list (car mailbox-data) :download-flags)
+		      (list (car mailbox-data) :download-messages :limit 100))))))
+	  (plist-get state-data :mailboxes))))
+    (plist-put state-data :tasks
+	       (append (plist-get state-data :tasks)
+		       download-messages-tasks))
+    (bic--maybe-next-task fsm state-data)))
 
 (defun bic--store-initial-mailbox-list (address mailboxes)
   (let ((table (gethash address bic-account-mailbox-table)))
@@ -1345,7 +1369,7 @@ It also includes underscore, which is used as an escape character.")
 	 ;; sequence numbers.
 	 (fsm-send
 	  fsm
-	  `(:queue-task (,mailbox :download-messages)))))
+	  `(:queue-task (,mailbox :download-messages :limit 100)))))
       ;; We don't really care about the \Recent flag.  Assuming
       ;; that the server always sends EXISTS along with RECENT,
       ;; we can ignore this.
@@ -1659,9 +1683,14 @@ It also includes underscore, which is used as an escape character.")
   "Face used for deactivated accounts in mailbox tree."
   :group 'bic)
 
-(defface bic-mailbox-tree-mailbox-subscribed
+(defface bic-mailbox-tree-mailbox-full-sync
   '((t (:inherit gnus-group-mail-1)))
-  "Face used for subscribed mailboxes in mailbox tree."
+  "Face used for fully synced mailboxes in mailbox tree."
+  :group 'bic)
+
+(defface bic-mailbox-tree-mailbox-limited-sync
+  '((t (:inherit gnus-group-mail-2)))
+  "Face used for partially synced mailboxes in mailbox tree."
   :group 'bic)
 
 (defface bic-mailbox-tree-mailbox-unsubscribed
@@ -1809,9 +1838,13 @@ user expects."
 		       (propertize " [not all recent fetched]"
 				   'face 'warning)))
 		     "\n")
-	    :button-face (if (cl-member "\\Subscribed" attributes :test #'cl-equalp)
-			     'bic-mailbox-tree-mailbox-subscribed
-			   'bic-mailbox-tree-mailbox-unsubscribed)
+	    :button-face (cond
+			  ((plist-get (cdr mailbox-data) :full-sync)
+			   'bic-mailbox-tree-mailbox-full-sync)
+			  ((cl-member "\\Subscribed" attributes :test #'cl-equalp)
+			   'bic-mailbox-tree-mailbox-limited-sync)
+			  (t
+			   'bic-mailbox-tree-mailbox-unsubscribed))
 	    mailbox-name))))
      mailboxes)))
 
