@@ -966,9 +966,8 @@ It also includes underscore, which is used as an escape character.")
 	    (if (file-exists-p uidvalidity-file)
 		(with-temp-buffer
 		  (insert-file-contents-literally uidvalidity-file)
-		  (if (string= (buffer-string) uidvalidity)
-		      (message "UIDVALIDITY match")
-		    ;; TODO
+		  (unless (string= (buffer-string) uidvalidity)
+		    ;; TODO: do something sensible here
 		    (warn "UIDVALIDITY mismatch: %s vs %s"
 			  (buffer-string) uidvalidity)))
 	      (message "Fresh UIDVALIDITY value: %S" uidvalidity-entry)
