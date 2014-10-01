@@ -676,7 +676,11 @@ ACCOUNT is a string of the form \"username@server\"."
      (list :connected state-data))
     (`(:ensure-up-to-date ,mailbox)
      (bic--queue-task-if-new state-data (list mailbox :download-flags))
-     (bic--queue-task-if-new state-data (list mailbox :download-messages :limit 100))
+     (bic--queue-task-if-new
+      state-data
+      `(,mailbox :download-messages
+		 ,@(unless (eq :full-sync (bic--mailbox-sync-level state-data mailbox))
+		     '(:limit 100))))
      (bic--maybe-next-task fsm state-data)
      (list :connected state-data))
     (:activate
@@ -879,22 +883,30 @@ It also includes underscore, which is used as an escape character.")
   (let ((download-messages-tasks
 	 (cl-mapcan
 	  (lambda (mailbox-data)
-	    (let ((attributes (plist-get (cdr mailbox-data) :attributes)))
-	      (cond
-	       ((or (cl-member "\\Noselect" attributes :test #'cl-equalp)
-		    (cl-member "\\NonExistent" attributes :test #'cl-equalp))
-		nil)
-	       ((plist-get (cdr mailbox-data) :full-sync)
-		(list (list (car mailbox-data) :download-flags)
-		      (list (car mailbox-data) :download-messages)))
-	       ((cl-member "\\Subscribed" attributes :test #'cl-equalp)
-		(list (list (car mailbox-data) :download-flags)
-		      (list (car mailbox-data) :download-messages :limit 100))))))
+	    (cl-case (bic--mailbox-sync-level state-data (car mailbox-data))
+	      (:full-sync
+	       (list (list (car mailbox-data) :download-flags)
+		     (list (car mailbox-data) :download-messages)))
+	      (:partial-sync
+	       (list (list (car mailbox-data) :download-flags)
+		     (list (car mailbox-data) :download-messages :limit 100)))))
 	  (plist-get state-data :mailboxes))))
     (plist-put state-data :tasks
 	       (append (plist-get state-data :tasks)
 		       download-messages-tasks))
     (bic--maybe-next-task fsm state-data)))
+
+(defun bic--mailbox-sync-level (state-data mailbox)
+  (let* ((mailbox-data (assoc mailbox (plist-get state-data :mailboxes)))
+	 (attributes (plist-get (cdr mailbox-data) :attributes)))
+    (cond
+     ((or (cl-member "\\Noselect" attributes :test #'cl-equalp)
+	  (cl-member "\\NonExistent" attributes :test #'cl-equalp))
+      nil)
+     ((plist-get (cdr mailbox-data) :full-sync)
+      :full-sync)
+     ((cl-member "\\Subscribed" attributes :test #'cl-equalp)
+      :partial-sync))))
 
 (defun bic--store-initial-mailbox-list (address mailboxes)
   (let ((table (gethash address bic-account-mailbox-table)))
@@ -1369,7 +1381,11 @@ It also includes underscore, which is used as an escape character.")
 	 ;; sequence numbers.
 	 (fsm-send
 	  fsm
-	  `(:queue-task (,mailbox :download-messages :limit 100)))))
+	  `(:queue-task
+	    (,mailbox :download-messages
+		      ,@(unless (eq :full-sync
+				    (bic--mailbox-sync-level state-data mailbox))
+			  '(:limit 100)))))))
       ;; We don't really care about the \Recent flag.  Assuming
       ;; that the server always sends EXISTS along with RECENT,
       ;; we can ignore this.
