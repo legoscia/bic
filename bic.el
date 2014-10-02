@@ -470,6 +470,10 @@ ACCOUNT is a string of the form \"username@server\"."
     ;; Get list of mailboxes
     (bic-command c
 		 (cond
+		  ((and (bic-connection--has-capability "LIST-EXTENDED" c)
+			(bic-connection--has-capability "LIST-STATUS" c)
+			(bic-connection--has-capability "CONDSTORE" c))
+		   "LIST \"\" \"*\" RETURN (SUBSCRIBED STATUS (UIDVALIDITY HIGHESTMODSEQ))")
 		  ((bic-connection--has-capability "LIST-EXTENDED" c)
 		   "LIST \"\" \"*\" RETURN (SUBSCRIBED)")
 		  (t
@@ -803,24 +807,38 @@ It also includes underscore, which is used as an escape character.")
 	 ;; asked for mailbox subscription information.
 	 (subscription-return
 	  (bic-connection--has-capability "LIST-EXTENDED" (plist-get state-data :connection)))
-	 (mailboxes
-	  (mapcar
-	   (lambda (x)
-	     (pcase x
-	       (`("LIST" ,attributes ,_separator ,mailbox-name)
-		;; If we weren't asking for subscription information,
-		;; keep previous subscription status.
-		(let* ((old-attributes
-			(unless subscription-return
-			  (plist-get (cdr (assoc mailbox-name old-mailboxes)) :attributes)))
-		       (subscription-attribute
-			(when (cl-member "\\Subscribed" old-attributes :test #'cl-equalp)
-			  (list "\\Subscribed"))))
-		  (list mailbox-name
-			:attributes (append subscription-attribute attributes))))
-	       (_
-		(error "Unexpected LIST response: %S" x))))
-	   list-data)))
+	 mailboxes)
+    ;; XXX: do we really always overwrite mailbox information?
+    ;; Need to reverse responses, so we get LIST before STATUS.
+    (dolist (x (nreverse list-data))
+      (pcase x
+	(`("LIST" ,attributes ,_separator ,mailbox-name)
+	 ;; If we weren't asking for subscription information,
+	 ;; keep previous subscription status.
+	 (let* ((old-attributes
+		 (unless subscription-return
+		   (plist-get (cdr (assoc mailbox-name old-mailboxes)) :attributes)))
+		(subscription-attribute
+		 (when (cl-member "\\Subscribed" old-attributes :test #'cl-equalp)
+		   (list "\\Subscribed"))))
+	   (push
+	    (list mailbox-name
+		  :attributes (append subscription-attribute attributes))
+	    mailboxes)))
+	(`("STATUS" ,mailbox-name ,status-att-list)
+	 (let ((mailbox-entry (assoc mailbox-name mailboxes)))
+	   (if (null mailbox-entry)
+	       (warn "STATUS response for unknown mailbox %S" mailbox-name)
+	     (pcase (member "UIDVALIDITY" status-att-list)
+	       (`("UIDVALIDITY" ,uidvalidity . ,_)
+		(setf (cdr mailbox-entry)
+		      (plist-put (cdr mailbox-entry) :uidvalidity uidvalidity))))
+	     (pcase (member "HIGHESTMODSEQ" status-att-list)
+	       (`("HIGHESTMODSEQ" ,highest-modseq . ,_)
+		(setf (cdr mailbox-entry)
+		      (plist-put (cdr mailbox-entry) :server-modseq highest-modseq)))))))
+	(_
+	 (warn "Unexpected LIST response: %S" x))))
     (mapc
      (lambda (mailbox)
        (let ((dir (bic--mailbox-dir state-data (car mailbox))))
@@ -882,16 +900,35 @@ It also includes underscore, which is used as an escape character.")
     (bic--queue-task-if-new state-data (list :any-mailbox :sync-mailboxes))))
 
 (defun bic--sync-mailboxes (fsm state-data task)
+  ;; TODO: do we need to issue a new LIST-STATUS request here?
+  ;; XXX: would that overwrite everything we know?
   (let ((download-messages-tasks
 	 (cl-mapcan
 	  (lambda (mailbox-data)
-	    (cl-case (bic--mailbox-sync-level state-data (car mailbox-data))
-	      (:full-sync
-	       (list (list (car mailbox-data) :download-flags)
-		     (list (car mailbox-data) :download-messages)))
-	      (:partial-sync
-	       (list (list (car mailbox-data) :download-flags)
-		     (list (car mailbox-data) :download-messages :limit 100)))))
+	    (let* ((dir (bic--mailbox-dir state-data (car mailbox-data)))
+		   (modseq-file (expand-file-name "modseq" dir))
+		   (needs-sync
+		    (or (not (file-exists-p modseq-file))
+			(null (plist-get (cdr mailbox-data) :uidvalidity))
+			(null (plist-get (cdr mailbox-data) :server-modseq))
+			(let ((our-modseq-pair
+			       (with-temp-buffer
+				 (insert-file-contents-literally modseq-file)
+				 (split-string (buffer-string) "-"))))
+			  (or (not (string=
+				    (car our-modseq-pair)
+				    (plist-get (cdr mailbox-data) :uidvalidity)))
+			      (bic--numeric-string-lessp
+			       (cadr our-modseq-pair)
+			       (plist-get (cdr mailbox-data) :server-modseq)))))))
+	      (when needs-sync
+		(cl-case (bic--mailbox-sync-level state-data (car mailbox-data))
+		  (:full-sync
+		   (list (list (car mailbox-data) :download-flags)
+			 (list (car mailbox-data) :download-messages)))
+		  (:partial-sync
+		   (list (list (car mailbox-data) :download-flags)
+			 (list (car mailbox-data) :download-messages :limit 100)))))))
 	  (plist-get state-data :mailboxes))))
     (plist-put state-data :tasks
 	       (append (plist-get state-data :tasks)
