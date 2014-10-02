@@ -1194,10 +1194,14 @@ It also includes underscore, which is used as an escape character.")
      (cl-assert (string= mailbox (plist-get state-data :selected)))
      ;; TODO: do something clever with the limit, so we don't need to
      ;; dig through too much data.
-     (let (unseen-flagged-search-data recent-search-data)
+     (let ((connection (plist-get state-data :connection))
+	    unseen-flagged-search-data recent-search-data)
        (bic-command
-	(plist-get state-data :connection)
-	"UID SEARCH OR UNSEEN FLAGGED"
+	connection
+	(concat "UID SEARCH "
+		(when (and t (bic-connection--has-capability "ESEARCH" connection))
+		  "RETURN () ")
+		"OR UNSEEN FLAGGED")
 	(lambda (search-response)
 	  (pcase search-response
 	    (`(:ok ,_ ,search-data)
@@ -1206,7 +1210,10 @@ It also includes underscore, which is used as an escape character.")
 	     (warn "SEARCH for unseen/flagged messages failed: %S" other)))))
        (bic-command
 	(plist-get state-data :connection)
-	(concat "UID SEARCH SEEN UNFLAGGED SINCE "
+	(concat "UID SEARCH "
+		(when (and t (bic-connection--has-capability "ESEARCH" connection))
+		  "RETURN () ")
+		"SEEN UNFLAGGED SINCE "
 		(bic--date-text
 		 (time-subtract (current-time)
 				(days-to-time bic-backlog-days))))
@@ -1463,10 +1470,10 @@ It also includes underscore, which is used as an escape character.")
     (fsm state-data task unseen-flagged-search-data recent-search-data)
   ;; Handle search response by fetching the body of all messages that
   ;; we don't have yet.
-  (let* ((unseen-flagged-search-results (cdr (assoc "SEARCH" unseen-flagged-search-data)))
-	 (unseen-flagged-length (length unseen-flagged-search-results))
-	 (recent-search-results (cdr (assoc "SEARCH" recent-search-data)))
-	 (recent-length (length recent-search-results))
+  (let* ((unseen-flagged-ranges (bic--get-search-range unseen-flagged-search-data))
+	 (unseen-flagged-length (gnus-range-length unseen-flagged-ranges))
+	 (recent-ranges (bic--get-search-range recent-search-data))
+	 (recent-length (gnus-range-length recent-ranges))
 	 (mailbox (car task))
 	 (uidvalidity
 	  (plist-get (cdr (assoc mailbox (plist-get state-data :mailboxes)))
@@ -1478,35 +1485,28 @@ It also includes underscore, which is used as an escape character.")
 	 (mailbox-entry (gethash mailbox mailbox-table)))
     (cond
      ((and (numberp limit) (> unseen-flagged-length limit))
-      (let* ((sorted (sort (mapcar #'string-to-number unseen-flagged-search-results) '<))
+      (let* ((sorted (gnus-uncompress-range unseen-flagged-ranges))
 	     (cut-point (last sorted (1+ limit))))
-	(setq fetch-these (cdr cut-point))
+	(setq fetch-these (gnus-compress-sequence (cdr cut-point)))
 	(setf (cdr cut-point) nil)
 	(setq not-these-unseen sorted)
-	(setq not-these-recent (mapcar #'string-to-number recent-search-results))))
+	(setq not-these-recent recent-ranges)))
      ((and (numberp limit) (> (+ unseen-flagged-length recent-length) limit))
       ;; We can fetch all unread/flagged messages, but not all recent
       ;; ones.
-      (let* ((unseen-as-numbers
-	      (mapcar #'string-to-number unseen-flagged-search-results))
-	     (sorted-recent
-	      (sort (mapcar #'string-to-number recent-search-results) '<))
+      (let* ((sorted-recent
+	      (gnus-uncompress-range recent-ranges))
 	     (cut-point (last sorted-recent
 			      (1+ (- limit unseen-flagged-length)))))
 	(setq fetch-these
-	      (append
+	      (gnus-range-add
 	       (cdr cut-point)
-	       unseen-as-numbers))
+	       unseen-flagged-ranges))
 	(setf (cdr cut-point) nil)
 	(setq not-these-unseen nil)
 	(setq not-these-recent sorted-recent)))
      (t
-      (setq fetch-these
-	    (sort
-	     (cl-remove-duplicates
-	      (mapcar #'string-to-number
-		      (append unseen-flagged-search-results recent-search-results)))
-	     '<))))
+      (setq fetch-these (gnus-range-add unseen-flagged-ranges recent-ranges))))
 
     (cl-flet
 	((uid-overview (uid)
@@ -1519,7 +1519,7 @@ It also includes underscore, which is used as an escape character.")
       ;; 	       (cl-remove-if #'uid-overview not-these-unseen)
       ;; 	       (cl-remove-if #'uid-overview not-these-recent))
       (cond
-       ((cl-member-if-not #'uid-overview not-these-unseen)
+       ((cl-member-if-not #'uid-overview (gnus-uncompress-range not-these-unseen))
 	(unless (plist-get mailbox-entry :not-all-unread)
 	  (warn "%s (%s) has too many new/flagged messages!  Limiting to the latest %d"
 		mailbox (plist-get state-data :address) limit)
@@ -1528,7 +1528,7 @@ It also includes underscore, which is used as an escape character.")
 	   (plist-get state-data :address)
 	   mailbox
 	   (plist-put mailbox-entry :not-all-unread t))))
-       ((cl-member-if-not #'uid-overview not-these-recent)
+       ((cl-member-if-not #'uid-overview (gnus-uncompress-range not-these-recent))
 	(unless (plist-get mailbox-entry :not-all-recent)
 	  ;; TODO: improve wording
 	  (warn "%s (%s) has too many recent messages!  Limiting to the latest %d"
@@ -1541,7 +1541,7 @@ It also includes underscore, which is used as an escape character.")
 
       ;; Don't fetch messages we've already downloaded.
       ;; TODO: is it possible that we have the envelope, but not the body?
-      (pcase (cl-delete-if #'uid-overview fetch-these)
+      (pcase (cl-delete-if #'uid-overview (gnus-uncompress-range fetch-these))
 	(`nil
 	 ;; (let ((filtered-search-results (cl-delete-if #'uid-overview fetch-these)))
 	 ;; 	(if (null filtered-search-results)
@@ -1587,6 +1587,29 @@ It also includes underscore, which is used as an escape character.")
 					 one-fetch-response
 					 uidvalidity)))))))))))
   (list :connected state-data nil))
+
+(defun bic--get-search-range (search-data)
+  "Return the results in SEARCH-DATA as a list of ranges."
+  (let ((esearch (assoc "ESEARCH" search-data)))
+    (if esearch
+	(bic--get-esearch-range esearch)
+      (let ((search (assoc "SEARCH" search-data)))
+	(gnus-compress-sequence
+	 (sort (mapcar #'string-to-number (cdr search))
+	       #'<)
+	 t)))))
+
+(defun bic--get-esearch-range (esearch)
+  (pcase (member "ALL" esearch)
+    (`("ALL" ,ranges-string . ,_)
+     (bic-parse-sequence-set ranges-string))
+    (_
+     ;; RFC 4731:
+     ;;
+     ;; If the SEARCH results in no matches, the server MUST
+     ;; NOT include the ALL result option in the ESEARCH response;
+     ;; however, it still MUST send the ESEARCH response.
+     nil)))
 
 (defun bic--read-overview (state-data mailbox-name)
   (let* ((dir (bic--mailbox-dir state-data mailbox-name))
