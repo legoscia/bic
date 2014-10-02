@@ -1045,6 +1045,26 @@ formatted as integers."
 	    (error "Invalid number or range: %S" range-or-number))))
        (mapconcat 'identity (nreverse parts) ",")))))
 
+(defun bic-parse-sequence-set (sequence-set-string)
+  "Parse a sequence set into ranges.
+Does not handle sequence sets including \"*\"."
+  (cl-reduce
+   #'gnus-range-add
+   (split-string sequence-set-string ",")
+   :key (lambda (seq-number-or-range)
+	  (cond
+	   ((string-match "^[0-9]+$" seq-number-or-range)
+	    (list (string-to-number seq-number-or-range)))
+	   ((string-match "^\\([0-9]+\\):\\([0-9]+\\)$" seq-number-or-range)
+	    (let ((first-number (string-to-number (match-string 1 seq-number-or-range)))
+		  (second-number (string-to-number (match-string 2 seq-number-or-range))))
+	      ;; The range endpoints can come in any order.
+	      (cons (min first-number second-number)
+		    (max first-number second-number))))
+	   (t
+	    (warn "Invalid seq-number-or-range: %S" seq-number-or-range))))
+   :initial-value nil))
+
 (defun bic-connection--has-capability (capability connection)
   "Return true if CONNECTION reported CAPABILITY.
 Authentication methods cannot be queried."
