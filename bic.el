@@ -490,6 +490,7 @@ ACCOUNT is a string of the form \"username@server\"."
 
 	;; XXX: do we _really_ want an extra connection?..  We could
 	;; probably do that later.
+	(bic--maybe-next-task fsm state-data)
 	(list :connected state-data nil))
        ;; TODO: handle LIST error
        ))
@@ -497,6 +498,7 @@ ACCOUNT is a string of the form \"username@server\"."
      (pcase lsub-response
        (`(:ok ,_ ,lsub-data)
 	(bic--handle-lsub-response fsm state-data lsub-data)
+	(bic--maybe-next-task fsm state-data)
 	(list :connected state-data nil))
        ;; TODO: handle LSUB error
        ))
@@ -835,7 +837,7 @@ It also includes underscore, which is used as an escape character.")
     (bic--store-initial-mailbox-list (plist-get state-data :address) mailboxes)
     (if subscription-return
 	;; If we have subscription info, we can sync mailboxes.
-	(bic--sync-mailboxes fsm state-data)
+	(bic--queue-task-if-new state-data (list :any-mailbox :sync-mailboxes))
       ;; If we didn't get the subscription info already, ask for it with LSUB.
       (bic-command
        (plist-get state-data :connection)
@@ -843,7 +845,7 @@ It also includes underscore, which is used as an escape character.")
        (lambda (response)
     	 (fsm-send fsm (list :lsub-response response)))))))
 
-(defun bic--handle-lsub-response (fsm state-data lsub-data)
+(defun bic--handle-lsub-response (_fsm state-data lsub-data)
   (let ((mailboxes (plist-get state-data :mailboxes))
 	(subscribed-mailboxes
 	 (delq nil
@@ -877,9 +879,9 @@ It also includes underscore, which is used as an escape character.")
 				       (car mailbox-entry) (cdr mailbox-entry)))))
      mailboxes)
     ;; Now we can finally sync the mailboxes.
-    (bic--sync-mailboxes fsm state-data)))
+    (bic--queue-task-if-new state-data (list :any-mailbox :sync-mailboxes))))
 
-(defun bic--sync-mailboxes (fsm state-data)
+(defun bic--sync-mailboxes (fsm state-data task)
   (let ((download-messages-tasks
 	 (cl-mapcan
 	  (lambda (mailbox-data)
@@ -894,7 +896,7 @@ It also includes underscore, which is used as an escape character.")
     (plist-put state-data :tasks
 	       (append (plist-get state-data :tasks)
 		       download-messages-tasks))
-    (bic--maybe-next-task fsm state-data)))
+    (fsm-send fsm (list :task-finished task))))
 
 (defun bic--mailbox-sync-level (state-data mailbox)
   (let* ((mailbox-data (assoc mailbox (plist-get state-data :mailboxes)))
@@ -1342,6 +1344,8 @@ It also includes underscore, which is used as an escape character.")
 	    (search-error
 	     (warn "Error in response to SEARCH: %S" search-error)))
 	  (fsm-send fsm (list :task-finished task))))))
+    (`(:any-mailbox :sync-mailboxes)
+     (bic--sync-mailboxes fsm state-data task))
     (`(,_ :logout)
      ;; No need for a callback - this is the last task.
      (bic-command (plist-get state-data :connection) "LOGOUT" #'ignore))
