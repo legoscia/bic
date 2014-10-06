@@ -1048,13 +1048,15 @@ formatted as integers."
 (defun bic-parse-sequence-set (sequence-set-string)
   "Parse a sequence set into ranges.
 Does not handle sequence sets including \"*\"."
-  (cl-reduce
-   #'gnus-range-add
-   (split-string sequence-set-string ",")
-   :key (lambda (seq-number-or-range)
+  (let ((start 0) (i 0)
+	(ranges nil))
+    (cl-flet
+	((to-range
+	  (seq-number-or-range)
 	  (cond
 	   ((string-match "^[0-9]+$" seq-number-or-range)
-	    (list (string-to-number seq-number-or-range)))
+	    (let ((n (string-to-number seq-number-or-range)))
+	      (cons n n)))
 	   ((string-match "^\\([0-9]+\\):\\([0-9]+\\)$" seq-number-or-range)
 	    (let ((first-number (string-to-number (match-string 1 seq-number-or-range)))
 		  (second-number (string-to-number (match-string 2 seq-number-or-range))))
@@ -1062,8 +1064,36 @@ Does not handle sequence sets including \"*\"."
 	      (cons (min first-number second-number)
 		    (max first-number second-number))))
 	   (t
-	    (warn "Invalid seq-number-or-range: %S" seq-number-or-range))))
-   :initial-value nil))
+	    (error "Invalid seq-number-or-range: %S" seq-number-or-range)))))
+      (while (and (< i (length sequence-set-string))
+		  (setq i (cl-position ?, sequence-set-string :start i)))
+	;; We found a comma.
+	(setq ranges (push (to-range (substring sequence-set-string start i)) ranges))
+	(cl-incf i)
+	(setf start i))
+      (setq ranges (push (to-range (substring sequence-set-string start)) ranges)))
+    ;; Everything parsed.  However, the server is allowed to return
+    ;; the ranges in any order, and with overlaps.  Let's
+    ;; canonicalise.
+
+    ;; First sort by the start of each range.
+    (setq ranges (cl-sort ranges #'< :key #'car))
+    ;; Then check for overlap.
+    (let ((ranges-without-overlap nil)
+	  (pointer ranges))
+      (while (cdr pointer)
+	(if (and (< (caar pointer) (cl-caadr pointer))
+		 (< (cdar pointer) (cl-cdadr pointer)))
+	    (setq pointer (cdr pointer))
+	  (let ((start-of-new-range (cdr pointer)))
+	    (setf (cdr pointer) nil)
+	    (setq ranges-without-overlap
+		  (gnus-range-add ranges-without-overlap ranges))
+	    (setq ranges start-of-new-range)
+	    (setq pointer ranges))))
+      (setq ranges-without-overlap
+	    (gnus-range-add ranges-without-overlap ranges))
+      ranges-without-overlap)))
 
 (defun bic-connection--has-capability (capability connection)
   "Return true if CONNECTION reported CAPABILITY.
