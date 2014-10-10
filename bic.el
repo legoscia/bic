@@ -2030,6 +2030,7 @@ If there is no such buffer, return nil."
     (define-key map "!" 'bic-message-mark-flagged)
     (define-key map "$" 'bic-message-mark-spam)
     (define-key map "\M-$" 'bic-message-mark-not-spam)
+    (define-key map "c" 'bic-mailbox-catchup)
     map))
 
 (define-derived-mode bic-mailbox-mode special-mode "BIC mailbox"
@@ -2185,6 +2186,32 @@ If there is no such buffer, return nil."
      (let* ((flags (gethash full-uid bic-mailbox--flags-table)))
        (or (member "\\Flagged" flags)
 	   (not (member "\\Seen" flags)))))))
+
+(defun bic-mailbox-catchup ()
+  "Mark all visible unread messages as read."
+  (interactive)
+  (unless (derived-mode-p 'bic-mailbox-mode)
+    (user-error "Not a mailbox buffer"))
+  (let ((messages nil)
+	(count 0))
+    (ewoc-map
+     (lambda (full-uid)
+       (unless (member "\\Seen" (gethash full-uid bic-mailbox--flags-table))
+	 (push full-uid messages)
+	 (incf count))
+       nil)
+     bic-mailbox--ewoc)
+    (if (null messages)
+	(message "All visible messages are already marked as read; nothing to catchup")
+      (if (y-or-n-p (format "Mark %d messages in %s as read? " count bic--current-mailbox))
+	  (let ((fsm (bic--find-account bic--current-account)))
+	    ;; TODO: it would be nice to send all UIDs to the FSM in a
+	    ;; single message.
+	    (dolist (full-uid messages)
+	      (fsm-send
+	       fsm
+	       (list :flags bic--current-mailbox full-uid '("\\Seen") ()))))
+	(message "Catchup cancelled")))))
 
 (defun bic-mailbox-reload (&optional _ignore-auto _noconfirm)
   "Reload messages for the current mailbox buffer."
