@@ -127,6 +127,9 @@ proceed."
     (`(:sentinel ,_ ,string)
      (cond
       ((string-prefix-p "open" string)
+       (bic--transcript fsm (format "*** %s Connected to %s\n"
+				    (format-time-string "%F %T")
+				    (plist-get state-data :server)))
        (cl-ecase (plist-get state-data :connection-type)
 	 ((:starttls :unencrypted)
 	  ;; Wait for STARTTLS capability etc
@@ -625,6 +628,9 @@ include the leading \"*\" tag."
 	(fail-reason (or (plist-get state-data :fail-reason)
 			 "Unexpected error")))
     (message "IMAP connection closed: %s" fail-reason)
+    (bic--transcript fsm (format "*** %s Connection closed: %s\n"
+				 (format-time-string "%F %T")
+				 fail-reason))
     (funcall callback fsm (list :disconnected fail-keyword fail-reason)))
   (list nil nil))
 
