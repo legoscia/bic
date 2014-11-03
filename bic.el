@@ -680,10 +680,9 @@ ACCOUNT is a string of the form \"username@server\"."
      (bic--maybe-next-task fsm state-data)
      (list :connected state-data))
     (`(:ensure-up-to-date ,mailbox)
-     (bic--queue-task-if-new state-data (list mailbox :download-flags))
      (bic--queue-task-if-new
       state-data
-      `(,mailbox :download-messages
+      `(,mailbox :sync-mailbox
 		 ,@(unless (eq :full-sync (bic--mailbox-sync-level state-data mailbox))
 		     '(:limit 100))))
      (bic--maybe-next-task fsm state-data)
@@ -923,11 +922,9 @@ It also includes underscore, which is used as an escape character.")
 	      (when needs-sync
 		(cl-case (bic--mailbox-sync-level state-data (car mailbox-data))
 		  (:full-sync
-		   (list (list (car mailbox-data) :download-flags)
-			 (list (car mailbox-data) :download-messages)))
+		   (list (list (car mailbox-data) :sync-mailbox)))
 		  (:partial-sync
-		   (list (list (car mailbox-data) :download-flags)
-			 (list (car mailbox-data) :download-messages :limit 100)))))))
+		   (list (list (car mailbox-data) :sync-mailbox :limit 100)))))))
 	  (plist-get state-data :mailboxes))))
     (plist-put state-data :tasks
 	       (append (plist-get state-data :tasks)
@@ -1188,13 +1185,81 @@ It also includes underscore, which is used as an escape character.")
 					      one-fetch-response
 					      mailbox-uidvalidity))))))))
 	    flag-combinations)))))
-    (`(,mailbox :download-messages . ,_options)
+    (`(,mailbox :sync-mailbox . ,_options)
      ;; At this point, we should have selected the mailbox already.
      (cl-assert (string= mailbox (plist-get state-data :selected)))
      ;; TODO: do something clever with the limit, so we don't need to
      ;; dig through too much data.
-     (let ((connection (plist-get state-data :connection))
-	    unseen-flagged-search-data recent-search-data)
+     (let* ((connection (plist-get state-data :connection))
+	    unseen-flagged-search-data recent-search-data
+	    (mailbox-plist
+	     (cdr (assoc mailbox (plist-get state-data :mailboxes))))
+	    (uidvalidity (plist-get mailbox-plist :uidvalidity))
+	    (our-modseq (plist-get mailbox-plist :our-modseq))
+	    (server-modseq (plist-get mailbox-plist :server-modseq))
+	    (highest-modseq our-modseq)
+	    (prefix (concat uidvalidity "-"))
+	    (overview-table (bic--read-overview state-data mailbox))
+	    uids)
+       ;; Find list of UIDs present in overview table.
+       (maphash
+	(lambda (full-uid _overview-data)
+	  (when (string-prefix-p prefix full-uid)
+	    (let ((uid (substring full-uid (1+ (cl-position ?- full-uid)))))
+	      (push uid uids))))
+	overview-table)
+       ;; We can skip requesting flags for already downloaded messages
+       ;; if there aren't any downloaded messages, or if the server
+       ;; supports CONDSTORE, and the MODSEQ values match.
+       (when (and uids
+		  (or (null server-modseq)
+		      (null our-modseq)
+		      (bic--numeric-string-lessp our-modseq server-modseq)))
+	 (bic-command
+	  connection
+	  (concat "UID FETCH "
+		  (bic-format-ranges
+		   (gnus-compress-sequence
+		    (sort (mapcar 'string-to-number uids) '<)
+		    t))
+		  (cond
+		   ((bic-connection--has-capability "CONDSTORE" connection)
+		    (if our-modseq
+			(concat " FLAGS (CHANGEDSINCE " our-modseq ")")
+		      " (FLAGS MODSEQ)"))
+		   (t
+		    " FLAGS")))
+	  (lambda (fetch-response)
+	    (pcase fetch-response
+	      (`(:ok ,resp ,fetched-messages)
+	       ;; TODO: any message we didn't get a response for was
+	       ;; deleted.
+	       (when fetched-messages
+		 (message "Extra response lines for FETCH: %S" fetched-messages))
+	       ;; Check for HIGHESTMODSEQ response code.
+	       ;; If none, use highest MODSEQ seen in FETCH responses.
+	       (when (string= (plist-get resp :code) "HIGHESTMODSEQ")
+		 (setq highest-modseq (plist-get resp :data))))
+	      (other
+	       (warn "FETCH request failed: %S" other))))
+	  (list
+	   (list 1 "FETCH"
+		 (lambda (one-fetch-response)
+		   ;; If the FETCH response contains a MODSEQ item,
+		   ;; remember the highest one.
+		   (pcase one-fetch-response
+		     (`(,_ "FETCH" ,msg-att)
+		      (pcase (member "MODSEQ" msg-att)
+			(`("MODSEQ" (,msg-modseq) . ,_)
+			 (when (or (null highest-modseq)
+				   (bic--numeric-string-lessp
+				    highest-modseq msg-modseq))
+			   (setq highest-modseq msg-modseq))))))
+		   (fsm-send fsm (list :early-fetch-response
+				       mailbox
+				       one-fetch-response
+				       uidvalidity)))))))
+       ;; Now search for messages that we need to download.
        (bic-command
 	connection
 	(concat "UID SEARCH "
@@ -1225,88 +1290,9 @@ It also includes underscore, which is used as an escape character.")
 	  ;; At this point, both requests should have finished.
 	  (bic--handle-search-response
 	   fsm state-data task
-	   unseen-flagged-search-data recent-search-data)))))
-    (`(,mailbox :download-flags)
-     (cl-assert (string= mailbox (plist-get state-data :selected)))
-     (let* ((connection (plist-get state-data :connection))
-	    (mailbox-plist
-	     (cdr (assoc mailbox (plist-get state-data :mailboxes))))
-	    (uidvalidity (plist-get mailbox-plist :uidvalidity))
-	    (our-modseq (plist-get mailbox-plist :our-modseq))
-	    (server-modseq (plist-get mailbox-plist :server-modseq))
-	    (highest-modseq our-modseq)
-	    (prefix (concat uidvalidity "-"))
-	    (overview-table (bic--read-overview state-data mailbox))
-	    uids)
-       (maphash
-	(lambda (full-uid _overview-data)
-	  (when (string-prefix-p prefix full-uid)
-	    (let ((uid (substring full-uid (1+ (cl-position ?- full-uid)))))
-	      (push uid uids))))
-	overview-table)
-       ;; We can skip requesting flags for already downloaded messages
-       ;; if there aren't any downloaded messages, or if the server
-       ;; supports CONDSTORE, and the MODSEQ values match.  NB: If we
-       ;; don't send a FETCH request, we need to signal :task-finished
-       ;; immediately.
-       (if (and uids
-		(or (null server-modseq)
-		    (null our-modseq)
-		    (bic--numeric-string-lessp our-modseq server-modseq)))
-	   (bic-command
-	    connection
-	    (concat "UID FETCH "
-		    (bic-format-ranges
-		     (gnus-compress-sequence
-		      (sort (mapcar 'string-to-number uids) '<)
-		      t))
-		    (cond
-		     ((bic-connection--has-capability "CONDSTORE" connection)
-		      (if our-modseq
-			  (concat " FLAGS (CHANGEDSINCE " our-modseq ")")
-			" (FLAGS MODSEQ)"))
-		     (t
-		      " FLAGS")))
-	    (lambda (fetch-response)
-	      (pcase fetch-response
-		(`(:ok ,resp ,fetched-messages)
-		 ;; TODO: any message we didn't get a response for was
-		 ;; deleted.
-		 (when fetched-messages
-		   (message "Extra response lines for FETCH: %S" fetched-messages))
-		 ;; Check for HIGHESTMODSEQ response code.
-		 ;; If none, use highest MODSEQ seen in FETCH responses.
-		 (when (string= (plist-get resp :code) "HIGHESTMODSEQ")
-		   (setq highest-modseq (plist-get resp :data)))
-		 (plist-put mailbox-plist :our-modseq highest-modseq)
-		 (when highest-modseq
-		   (let* ((dir (bic--mailbox-dir state-data mailbox))
-			  (modseq-file (expand-file-name "modseq" dir)))
-		     (bic--write-string-to-file
-		      (concat uidvalidity "-" highest-modseq)
-		      modseq-file))))
-		(other
-		 (warn "FETCH request failed: %S" other)))
-	      (fsm-send fsm (list :task-finished task)))
-	    (list
-	     (list 1 "FETCH"
-		   (lambda (one-fetch-response)
-		     ;; If the FETCH response contains a MODSEQ item,
-		     ;; remember the highest one.
-		     (pcase one-fetch-response
-		       (`(,_ "FETCH" ,msg-att)
-			(pcase (member "MODSEQ" msg-att)
-			  (`("MODSEQ" (,msg-modseq) . ,_)
-			   (when (or (null highest-modseq)
-				     (bic--numeric-string-lessp
-				      highest-modseq msg-modseq))
-			     (setq highest-modseq msg-modseq))))))
-		     (fsm-send fsm (list :early-fetch-response
-					 mailbox
-					 one-fetch-response
-					 uidvalidity))))))
-	 ;; Nothing to request - we're done.
-	 (fsm-send fsm (list :task-finished task)))))
+	   unseen-flagged-search-data recent-search-data
+	   highest-modseq server-modseq)))))
+
     (`(,mailbox :expunge-messages . ,sequence-numbers)
      (cl-assert (string= mailbox (plist-get state-data :selected)))
      ;; Since we don't (yet?) maintain a mapping of sequence numbers
@@ -1428,7 +1414,7 @@ It also includes underscore, which is used as an escape character.")
 	 (fsm-send
 	  fsm
 	  `(:queue-task
-	    (,mailbox :download-messages
+	    (,mailbox :sync-mailbox
 		      ,@(unless (eq :full-sync
 				    (bic--mailbox-sync-level state-data mailbox))
 			  '(:limit 100)))))))
@@ -1466,7 +1452,8 @@ It also includes underscore, which is used as an escape character.")
 	(t (string-lessp s1 s2))))
 
 (defun bic--handle-search-response
-    (fsm state-data task unseen-flagged-search-data recent-search-data)
+    (fsm state-data task unseen-flagged-search-data recent-search-data
+	 highest-modseq server-modseq)
   ;; Handle search response by fetching the body of all messages that
   ;; we don't have yet.
   (let* ((unseen-flagged-ranges (bic--get-search-range unseen-flagged-search-data))
@@ -1510,7 +1497,20 @@ It also includes underscore, which is used as an escape character.")
     (cl-flet
 	((uid-overview (uid)
 		       (gethash (concat uidvalidity "-" (bic-number-to-string uid))
-				overview-table)))
+				overview-table))
+	 (write-modseq
+	  ()
+	  ;; The server told us the new MODSEQ value when we selected
+	  ;; the mailbox.  We retrieved all flag changes since our
+	  ;; previously recorded MODSEQ value, and all new messages
+	  ;; that we are interested in.  At this point, we should be
+	  ;; entitled to bump our recorded MODSEQ value.
+	  (when server-modseq
+	    (let* ((dir (bic--mailbox-dir state-data mailbox))
+		   (modseq-file (expand-file-name "modseq" dir)))
+	      (bic--write-string-to-file
+	       (concat uidvalidity "-" server-modseq)
+	       modseq-file)))))
       ;; Now we know which messages we're not going to fetch because
       ;; they exceed the limit.  If they haven't been downloaded
       ;; already, warn about it.
@@ -1542,14 +1542,13 @@ It also includes underscore, which is used as an escape character.")
       ;; TODO: is it possible that we have the envelope, but not the body?
       (pcase (cl-delete-if #'uid-overview (gnus-uncompress-range fetch-these))
 	(`nil
-	 ;; (let ((filtered-search-results (cl-delete-if #'uid-overview fetch-these)))
-	 ;; 	(if (null filtered-search-results)
-	 ;; 	    (progn
+	 (write-modseq)
 	 (message "Nothing to fetch from %s for %s"
 		  mailbox (plist-get state-data :address))
 	 (fsm-send fsm (list :task-finished task)))
 	(filtered-search-results
-	 (let* ((count (length filtered-search-results))
+	 (let* ((c (plist-get state-data :connection))
+		(count (length filtered-search-results))
 		(progress
 		 (make-progress-reporter
 		  (format "Fetching %d messages from %s for %s..."
@@ -1559,20 +1558,25 @@ It also includes underscore, which is used as an escape character.")
 	   ;; These should be UIDs, since they are a response to a UID
 	   ;; SEARCH command.
 	   (bic-command
-	    (plist-get state-data :connection)
+	    c
 	    (concat "UID FETCH "
 		    (bic-format-ranges
 		     (gnus-compress-sequence
 		      (sort filtered-search-results '<)
 		      t))
 		    ;; TODO: Is "BODY.PEEK[]" the right choice?
-		    " (ENVELOPE INTERNALDATE FLAGS BODY.PEEK[])")
+		    " ("
+		    (when (bic-connection--has-capability "CONDSTORE" c)
+		      "MODSEQ ")
+		    "ENVELOPE INTERNALDATE FLAGS BODY.PEEK[])")
 	    (lambda (fetch-response)
 	      (progress-reporter-done progress)
 	      (pcase fetch-response
 		(`(:ok ,_ ,fetched-messages)
 		 (when fetched-messages
-		   (message "Extra response lines for FETCH: %S" fetched-messages)))
+		   (message "Extra response lines for FETCH: %S" fetched-messages))
+		 ;; TODO: can we use highest-modseq for anything?
+		 (write-modseq))
 		(other
 		 (warn "FETCH request failed: %S" other)))
 	      (fsm-send fsm (list :task-finished task)))
@@ -1581,6 +1585,16 @@ It also includes underscore, which is used as an escape character.")
 		   (lambda (one-fetch-response)
 		     (cl-incf n)
 		     (progress-reporter-update progress n)
+		     ;; If the FETCH response contains a MODSEQ item,
+		     ;; remember the highest one.
+		     (pcase one-fetch-response
+		       (`(,_ "FETCH" ,msg-att)
+			(pcase (member "MODSEQ" msg-att)
+			  (`("MODSEQ" (,msg-modseq) . ,_)
+			   (when (or (null highest-modseq)
+				     (bic--numeric-string-lessp
+				      highest-modseq msg-modseq))
+			     (setq highest-modseq msg-modseq))))))
 		     (fsm-send fsm (list :early-fetch-response
 					 mailbox
 					 one-fetch-response
