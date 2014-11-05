@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset='utf-8'>
+    <meta http-equiv="X-UA-Compatible" content="chrome=1">
+    <meta name="viewport" content="width=640">
+
+    <link rel="stylesheet" href="stylesheets/core.css" media="screen">
+    <link rel="stylesheet" href="stylesheets/mobile.css" media="handheld, only screen and (max-device-width:640px)">
+    <link rel="stylesheet" href="stylesheets/pygment_trac.css">
+
+    <script type="text/javascript" src="javascripts/modernizr.js"></script>
+    <script type="text/javascript" src="https://ajax.googleapis.com/ajax/libs/jquery/1.7.1/jquery.min.js"></script>
+    <script type="text/javascript" src="javascripts/headsmart.min.js"></script>
+    <script type="text/javascript">
+      $(document).ready(function () {
+        $('#main_content').headsmart()
+      })
+    </script>
+    <title>BIC by legoscia</title>
+  </head>
+
+  <body>
+    <a id="forkme_banner" href="https://github.com/legoscia/bic">View on GitHub</a>
+    <div class="shell">
+
+      <header>
+        <span class="ribbon-outer">
+          <span class="ribbon-inner">
+            <h1>BIC</h1>
+            <h2>Best IMAP Client (for Emacs)</h2>
+          </span>
+          <span class="left-tail"></span>
+          <span class="right-tail"></span>
+        </span>
+      </header>
+
+      <section id="downloads">
+        <span class="inner">
+          <a href="https://github.com/legoscia/bic/zipball/master" class="zip"><em>download</em> .ZIP</a><a href="https://github.com/legoscia/bic/tarball/master" class="tgz"><em>download</em> .TGZ</a>
+        </span>
+      </section>
+
+
+      <span class="banner-fix"></span>
+
+
+      <section id="main_content">
+        <p>BIC is an IMAP client for Emacs.  It is built on the following
+principles:</p>
+
+<ul>
+<li>
+<strong>asynchronicity</strong>: the Emacs user interface should be blocked as
+little as possible.  Any long-running commands should be run in the
+background.</li>
+<li>
+<strong>minimal configuration</strong>: you should be able to <em>just read
+your mail</em> without adding half a page of configuration variable
+settings to your <code>.emacs</code> file, or installing and configuring any
+external programs.  <em>Life is too short.</em>
+</li>
+<li>
+<strong>offline is online</strong>: the client should have the same behaviour even
+if the connection to the mail server is lost, and changes should be
+synchronised seamlessly once the connection is reestablished.</li>
+<li>
+<strong>osmosis</strong>: you shouldn't have to ask your mail client to download
+your messages for offline access; they should just be available
+without you having to do anything.</li>
+</ul>
+
+<p>That said, it is still a work in progress.</p>
+      </section>
+
+      <footer>
+        <span class="ribbon-outer">
+          <span class="ribbon-inner">
+            <p>this project by <a href="https://github.com/legoscia">legoscia</a> can be found on <a href="https://github.com/legoscia/bic">GitHub</a></p>
+          </span>
+          <span class="left-tail"></span>
+          <span class="right-tail"></span>
+        </span>
+        <p>Generated with <a href="http://pages.github.com">GitHub Pages</a> using Merlot</p>
+        <span class="octocat"></span>
+      </footer>
+
+    </div>
+
+    
+  </body>
+</html>
