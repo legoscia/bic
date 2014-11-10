@@ -2309,7 +2309,11 @@ With prefix argument, don't mark message as read."
   "String containing uidvalidity and uid for message displayed in buffer.")
 
 (defvar bic-message-mode-map
-  (let ((map (make-sparse-keymap)))
+  ;; gnus-article-mode-map sets widget-keymap as its parent.  I'm not
+  ;; yet ready to give up special-mode-map, so let's start out with a
+  ;; copy of widget-keymap instead.  This lets us tab between elements
+  ;; and hit RET to activate links etc.
+  (let ((map (copy-keymap widget-keymap)))
     (set-keymap-parent map special-mode-map)
     ;; XXX: mark as replied, insert body, etc
     (define-key map "r" 'bic-message-reply)
