@@ -683,7 +683,7 @@ ACCOUNT is a string of the form \"username@server\"."
      (bic--queue-task-if-new
       state-data
       `(,mailbox :sync-mailbox
-		 ,@(unless (eq :full-sync (bic--mailbox-sync-level state-data mailbox))
+		 ,@(unless (eq :unlimited-sync (bic--mailbox-sync-level state-data mailbox))
 		     '(:limit 100))))
      (bic--maybe-next-task fsm state-data)
      (list :connected state-data))
@@ -844,9 +844,9 @@ It also includes underscore, which is used as an escape character.")
 	 (bic--write-string-to-file
 	  (mapconcat #'identity (plist-get (cdr mailbox) :attributes) "\n")
 	  (expand-file-name "attributes" dir))
-	 (when (file-exists-p (expand-file-name "full-sync" dir))
+	 (when (file-exists-p (expand-file-name "unlimited-sync" dir))
 	   (setf (cdr mailbox)
-		 (plist-put (cdr mailbox) :full-sync t)))))
+		 (plist-put (cdr mailbox) :unlimited-sync t)))))
      mailboxes)
     ;; Modify state-data in place:
     (plist-put state-data :mailboxes mailboxes)
@@ -921,7 +921,7 @@ It also includes underscore, which is used as an escape character.")
 			       (plist-get (cdr mailbox-data) :server-modseq)))))))
 	      (when needs-sync
 		(cl-case (bic--mailbox-sync-level state-data (car mailbox-data))
-		  (:full-sync
+		  (:unlimited-sync
 		   (list (list (car mailbox-data) :sync-mailbox)))
 		  (:partial-sync
 		   (list (list (car mailbox-data) :sync-mailbox :limit 100)))))))
@@ -938,8 +938,8 @@ It also includes underscore, which is used as an escape character.")
      ((or (cl-member "\\Noselect" attributes :test #'cl-equalp)
 	  (cl-member "\\NonExistent" attributes :test #'cl-equalp))
       nil)
-     ((plist-get (cdr mailbox-data) :full-sync)
-      :full-sync)
+     ((plist-get (cdr mailbox-data) :unlimited-sync)
+      :unlimited-sync)
      ((cl-member "\\Subscribed" attributes :test #'cl-equalp)
       :partial-sync))))
 
@@ -1415,7 +1415,7 @@ It also includes underscore, which is used as an escape character.")
 	  fsm
 	  `(:queue-task
 	    (,mailbox :sync-mailbox
-		      ,@(unless (eq :full-sync
+		      ,@(unless (eq :unlimited-sync
 				    (bic--mailbox-sync-level state-data mailbox))
 			  '(:limit 100)))))))
       ;; We don't really care about the \Recent flag.  Assuming
@@ -1775,7 +1775,7 @@ It also includes underscore, which is used as an escape character.")
   "Face used for deactivated accounts in mailbox tree."
   :group 'bic)
 
-(defface bic-mailbox-tree-mailbox-full-sync
+(defface bic-mailbox-tree-mailbox-unlimited-sync
   '((t (:inherit gnus-group-mail-1)))
   "Face used for fully synced mailboxes in mailbox tree."
   :group 'bic)
@@ -1931,8 +1931,8 @@ user expects."
 				   'face 'warning)))
 		     "\n")
 	    :button-face (cond
-			  ((plist-get (cdr mailbox-data) :full-sync)
-			   'bic-mailbox-tree-mailbox-full-sync)
+			  ((plist-get (cdr mailbox-data) :unlimited-sync)
+			   'bic-mailbox-tree-mailbox-unlimited-sync)
 			  ((cl-member "\\Subscribed" attributes :test #'cl-equalp)
 			   'bic-mailbox-tree-mailbox-limited-sync)
 			  (t
