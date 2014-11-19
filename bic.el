@@ -1903,16 +1903,20 @@ By default, widget mode is too stingy about where the point has
 to be for the button press to count.  Let's try to do what the
 user expects."
   (interactive "@d")
+  (let ((button (bic--button-on-current-line)))
+    (if (null button)
+	(user-error "No button on this line")
+      (widget-apply-action button event))))
+
+(defun bic--button-on-current-line ()
   (save-excursion
     (forward-line 0)
-    (let* ((button-pos
-	    (if (get-char-property (point) 'button)
-		(point)
-	      (next-single-char-property-change (point) 'button nil (line-end-position))))
-	   (button (when button-pos (get-char-property button-pos 'button))))
-      (if (null button)
-	  (user-error "No button on this line")
-	(widget-apply-action button event)))))
+    (let ((button-pos
+	   (if (get-char-property (point) 'button)
+	       (point)
+	     (next-single-char-property-change
+	      (point) 'button nil (line-end-position)))))
+      (when button-pos (get-char-property button-pos 'button)))))
 
 (defun bic-mailbox-tree ()
   "Show mailbox tree buffer."
