@@ -453,9 +453,21 @@ ACCOUNT is a string of the form \"username@server\"."
 	   pending-flags-files))
 	 (pending-flags-tasks (mapcar (lambda (mailbox)
 					(list mailbox :pending-flags))
-				      mailboxes-with-pending-flags)))
+				      mailboxes-with-pending-flags))
+	 (want-subscribed-files (file-expand-wildcards "*/want-subscribed"))
+	 (want-subscribed-mailboxes
+	  (mapcar
+	   (lambda (want-subscribed-file)
+	     (bic--unsanitize-mailbox-name
+	      (directory-file-name
+	       (file-name-directory want-subscribed-file))))
+	   want-subscribed-files))
+	 (want-subscribed-tasks
+	  (mapcar (lambda (mailbox) (list :any-mailbox :subscribe mailbox))
+		  want-subscribed-mailboxes)))
     ;; NB: Overwriting any existing tasks from previous connections.
-    (plist-put state-data :tasks pending-flags-tasks)
+    (plist-put state-data :tasks (append pending-flags-tasks
+					 want-subscribed-tasks))
     (plist-put state-data :current-task nil))
 
   (let ((c (plist-get state-data :connection)))
@@ -645,6 +657,14 @@ ACCOUNT is a string of the form \"username@server\"."
 		    :tasks (append tasks (list new-task)))))
      (bic--maybe-next-task fsm state-data)
      (list :connected state-data))
+    (`(:sync-level ,mailbox ,new-sync-level)
+     ;; Update sync level and maybe send subscribe command.
+     (when (bic--set-sync-level state-data mailbox new-sync-level)
+       (bic--queue-task-if-new
+	state-data
+	(list :any-mailbox :subscribe mailbox)))
+     (list :connected state-data))
+
     (`(:queue-task ,new-task)
      (bic--queue-task-if-new state-data new-task)
      (bic--maybe-next-task fsm state-data)
@@ -733,6 +753,11 @@ ACCOUNT is a string of the form \"username@server\"."
      (list :disconnected state-data))
     (`(:flags ,mailbox ,full-uid ,flags-to-add ,flags-to-remove)
      (bic--write-pending-flags mailbox full-uid flags-to-add flags-to-remove state-data)
+     (list :disconnected state-data))
+    (`(:sync-level ,mailbox ,new-sync-level)
+     ;; Update sync level; we may have to send subscribe commands when
+     ;; we are connected.
+     (bic--set-sync-level state-data mailbox new-sync-level)
      (list :disconnected state-data))
     (:reconnect
      (if (plist-get state-data :deactivated)
@@ -839,14 +864,26 @@ It also includes underscore, which is used as an escape character.")
 	 (warn "Unexpected LIST response: %S" x))))
     (mapc
      (lambda (mailbox)
-       (let ((dir (bic--mailbox-dir state-data (car mailbox))))
+       (let* ((dir (bic--mailbox-dir state-data (car mailbox)))
+	      (attributes (plist-get (cdr mailbox) :attributes))
+	      (sync-level-file (expand-file-name "sync-level" dir))
+	      (sync-level-file-contents
+	       (and (file-exists-p sync-level-file)
+		    (with-temp-buffer
+		      (insert-file-contents-literally sync-level-file)
+		      (buffer-string))))
+	      (sync-level-keyword
+	       (and sync-level-file-contents
+		    (cdr (assoc sync-level-file-contents
+				'(("unlimited-sync" . :unlimited-sync)
+				  ("partial-sync" . :partial-sync)
+				  ("no-sync" . :no-sync)))))))
 	 (make-directory dir t)
 	 (bic--write-string-to-file
-	  (mapconcat #'identity (plist-get (cdr mailbox) :attributes) "\n")
+	  (mapconcat #'identity attributes "\n")
 	  (expand-file-name "attributes" dir))
-	 (when (file-exists-p (expand-file-name "unlimited-sync" dir))
-	   (setf (cdr mailbox)
-		 (plist-put (cdr mailbox) :unlimited-sync t)))))
+	 (setf (cdr mailbox)
+	       (plist-put (cdr mailbox) :explicit-sync-level sync-level-keyword))))
      mailboxes)
     ;; Modify state-data in place:
     (plist-put state-data :mailboxes mailboxes)
@@ -931,15 +968,54 @@ It also includes underscore, which is used as an escape character.")
 		       download-messages-tasks))
     (fsm-send fsm (list :task-finished task))))
 
-(defun bic--mailbox-sync-level (state-data mailbox)
+(defun bic--set-sync-level (state-data mailbox new-sync-level)
+  "Update sync level for MAILBOX in STATE-DATA.
+If we should send a subscribe command, write a \"want-subscribed\"
+file and return t."
   (let* ((mailbox-data (assoc mailbox (plist-get state-data :mailboxes)))
-	 (attributes (plist-get (cdr mailbox-data) :attributes)))
+	 (attributes (plist-get (cdr mailbox-data) :attributes))
+	 (want-subscribed (memq new-sync-level '(unlimited-sync partial-sync))))
+    (setf (cdr mailbox-data)
+	  (plist-put (cdr mailbox-data)
+		     :explicit-sync-level
+		     (cdr (assq new-sync-level
+				'((unlimited-sync . :unlimited-sync)
+				  (partial-sync . :partial-sync)
+				  (no-sync . :no-sync))))))
+    (bic--update-mailbox-status (plist-get state-data :address)
+				mailbox (cdr mailbox-data))
+    (let* ((dir (bic--mailbox-dir state-data mailbox))
+	   (sync-level-file (expand-file-name "sync-level" dir)))
+      (with-temp-buffer
+	(insert (symbol-name new-sync-level))
+	(write-region (point-min) (point-max)
+		      sync-level-file nil :silent)))
+    ;; Ensure that the mailbox is subscribed if we want to sync it.
+    (when (and want-subscribed
+	       (not (cl-member "\\Subscribed" attributes :test #'cl-equalp)))
+      (write-region
+       (point-min) (point-min)
+       (expand-file-name
+	(bic--mailbox-dir state-data mailbox)
+	"want-subscribed")
+       nil :silent)
+      t)))
+
+(defun bic--mailbox-sync-level (state-data mailbox)
+  (let ((mailbox-data (assoc mailbox (plist-get state-data :mailboxes))))
+    (bic--infer-sync-level mailbox-data)))
+
+(defun bic--infer-sync-level (mailbox-data)
+  (let ((attributes (plist-get (cdr mailbox-data) :attributes))
+	(explicit-sync-level (plist-get (cdr mailbox-data) :explicit-sync-level)))
     (cond
      ((or (cl-member "\\Noselect" attributes :test #'cl-equalp)
 	  (cl-member "\\NonExistent" attributes :test #'cl-equalp))
       nil)
-     ((plist-get (cdr mailbox-data) :unlimited-sync)
-      :unlimited-sync)
+     (explicit-sync-level
+      (if (eq explicit-sync-level :no-sync)
+	  nil
+	explicit-sync-level))
      ((cl-member "\\Subscribed" attributes :test #'cl-equalp)
       :partial-sync))))
 
@@ -1375,6 +1451,22 @@ It also includes underscore, which is used as an escape character.")
 	  (fsm-send fsm (list :task-finished task))))))
     (`(:any-mailbox :sync-mailboxes)
      (bic--sync-mailboxes fsm state-data task))
+    (`(:any-mailbox :subscribe ,mailbox)
+     (bic-command
+      (plist-get state-data :connection)
+      (concat "SUBSCRIBE " (bic-quote-string mailbox))
+      (lambda (subscribe-response)
+	(pcase subscribe-response
+	  (`(:ok ,_ ,extra-data)
+	   (when extra-data
+	     (warn "Extra data in response to SUBSCRIBE: %S" extra-data))
+	   (let* ((dir (bic--mailbox-dir state-data mailbox))
+		  (want-subscribed-file (expand-file-name "want-subscribed" dir)))
+	     (when (file-exists-p want-subscribed-file)
+	       (delete-file want-subscribed-file))))
+	  (subscribe-error
+	   (warn "Error in response to SUBSCRIBE: %S" subscribe-error)))
+	(fsm-send fsm (list :task-finished task)))))
     (`(,_ :logout)
      ;; No need for a callback - this is the last task.
      (bic-command (plist-get state-data :connection) "LOGOUT" #'ignore))
@@ -1780,7 +1872,7 @@ It also includes underscore, which is used as an escape character.")
   "Face used for fully synced mailboxes in mailbox tree."
   :group 'bic)
 
-(defface bic-mailbox-tree-mailbox-limited-sync
+(defface bic-mailbox-tree-mailbox-partial-sync
   '((t (:inherit gnus-group-mail-2)))
   "Face used for partially synced mailboxes in mailbox tree."
   :group 'bic)
@@ -1930,13 +2022,13 @@ user expects."
 		       (propertize " [not all recent fetched]"
 				   'face 'warning)))
 		     "\n")
-	    :button-face (cond
-			  ((plist-get (cdr mailbox-data) :unlimited-sync)
-			   'bic-mailbox-tree-mailbox-unlimited-sync)
-			  ((cl-member "\\Subscribed" attributes :test #'cl-equalp)
-			   'bic-mailbox-tree-mailbox-limited-sync)
-			  (t
-			   'bic-mailbox-tree-mailbox-unsubscribed))
+	    :button-face (cl-ecase (bic--infer-sync-level mailbox-data)
+			   (:unlimited-sync
+			    'bic-mailbox-tree-mailbox-unlimited-sync)
+			   (:partial-sync
+			    'bic-mailbox-tree-mailbox-partial-sync)
+			   ((nil)
+			    'bic-mailbox-tree-mailbox-unsubscribed))
 	    mailbox-name))))
      mailboxes)))
 
@@ -1953,6 +2045,23 @@ user expects."
 		(widget-get bic-mailbox-tree--widget :children))))
 	  (when account-widget
 	    (widget-value-set account-widget (widget-value account-widget))))))))
+
+;;; Set sync level
+
+(defun bic-mailbox-set-sync-level (account mailbox sync-level)
+  (interactive
+   (let* ((account (bic--read-existing-account "IMAP account: " t))
+	  (mailbox (bic--read-mailbox "Mailbox: " account t))
+	  (sync-levels '("unlimited-sync"
+			 "partial-sync"
+			 "no-sync"))
+	  (sync-level (completing-read
+		       "New sync level: "
+		       sync-levels nil t)))
+     (if (member sync-level sync-levels)
+	 (list account mailbox (intern sync-level))
+       (user-error "No sync level specified"))))
+  (fsm-send (bic--find-account account) (list :sync-level mailbox sync-level)))
 
 ;;; Mailbox view
 
