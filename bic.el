@@ -1873,12 +1873,12 @@ file and return t."
   :group 'bic)
 
 (defface bic-mailbox-tree-mailbox-partial-sync
-  '((t (:inherit gnus-group-mail-2)))
+  '((t (:inherit gnus-group-mail-low)))
   "Face used for partially synced mailboxes in mailbox tree."
   :group 'bic)
 
 (defface bic-mailbox-tree-mailbox-unsubscribed
-  '((t (:inherit gnus-group-mail-low-empty)))
+  '((t (:inherit gnus-group-news-low-empty)))
   "Face used for unsubscribed mailboxes in mailbox tree."
   :group 'bic)
 
