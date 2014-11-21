@@ -22,10 +22,10 @@ below.
 
 ** Requirements
 
-BIC requires *Emacs 24.5*, nothing less.  At the time of this writing,
-Emacs 24.5 hasn't been released yet, so you'll need to use an Emacs
+BIC requires *Emacs 25*, nothing less.  At the time of this writing,
+Emacs 25 hasn't been released yet, so you'll need to use an Emacs
 built from the development tree.  Such an Emacs will identify itself
-as 24.4.50.
+as 25.0.50.
 
 BIC also requires a recent version of [[http://emacs-jabber.sourceforge.net][jabber.el]] to be installed.  The
 easiest way to satisfy this is to install the =jabber= package from
