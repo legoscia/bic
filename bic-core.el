@@ -627,7 +627,6 @@ include the leading \"*\" tag."
 			  :unknown-reason))
 	(fail-reason (or (plist-get state-data :fail-reason)
 			 "Unexpected error")))
-    (message "IMAP connection closed: %s" fail-reason)
     (bic--transcript fsm (format "*** %s Connection closed: %s\n"
 				 (format-time-string "%F %T")
 				 fail-reason))
