@@ -91,16 +91,17 @@ proceed."
   (fsm state-data)
   (let* ((server (plist-get state-data :server))
 	 (connection-type (plist-get state-data :connection-type))
+	 (service (or (plist-get state-data :port)
+		      (cl-ecase connection-type
+			((:starttls :unencrypted) 143)
+			(:plaintls 993))))
 	 (buffer (generate-new-buffer (concat "bic-" server))))
     (condition-case e
 	(let ((proc (make-network-process
 		     :name (concat "bic-" server)
 		     :buffer buffer
 		     :host server
-		     :service (or (plist-get state-data :port)
-				  (cl-ecase connection-type
-				    ((:starttls :unencrypted) 143)
-				    (:plaintls 993)))
+		     :service service
 		     :coding 'binary
 		     :nowait t
 		     :keepalive t
@@ -112,19 +113,19 @@ proceed."
        ;; We can't move directly to a different state in the enter state
        ;; function...
        (kill-buffer buffer)
-       (fsm-send fsm (list :connection-failed e))
+       (fsm-send fsm (list :connection-failed e server service))
        (list state-data nil)))))
 
 (define-state bic-connection :connecting
-  (_fsm state-data event _callback)
+  (fsm state-data event _callback)
   (pcase event
-    (`(:connection-failed ,e)
+    (`(:connection-failed ,e ,server ,service)
      ;; from enter-state-function
      (bic--fail state-data
 		:connection-failed
-		(format "connection failed: %s"
-			(error-message-string e))))
-    (`(:sentinel ,_ ,string)
+		(format "connection to %s:%s failed: %s"
+			server service (error-message-string e))))
+    (`(:sentinel ,proc ,string)
      (cond
       ((string-prefix-p "open" string)
        (bic--transcript fsm (format "*** %s Connected to %s\n"
@@ -155,9 +156,13 @@ proceed."
        ;; strip trailing newline
        (when (eq ?\n (aref string (1- (length string))))
 	 (setq string (substring string 0 -1)))
-       (bic--fail state-data
-		  :connection-failed
-		  (format "connection failed: %s" string)))
+       (let* ((contact (process-contact proc))
+	      (server (car contact))
+	      (service (cadr contact)))
+	 (bic--fail state-data
+		    :connection-failed
+		    (format "connection to %s:%s %s"
+			    server service string))))
       (t
        (message "Unknown sentinel event %S" string)
        (list :connecting state-data nil))))
