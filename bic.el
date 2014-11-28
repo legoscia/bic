@@ -399,7 +399,7 @@ ACCOUNT is a string of the form \"username@server\"."
     (list state-data nil)))
 
 (define-state bic-account :existing
-  (fsm state-data event _callback)
+  (fsm state-data event callback)
   (let ((our-connection (plist-get state-data :connection)))
     (pcase event
       (`((:disconnected ,keyword ,reason) ,(pred (eq our-connection)))
@@ -415,6 +415,12 @@ ACCOUNT is a string of the form \"username@server\"."
       (`(:flags ,mailbox ,full-uid ,flags-to-add ,flags-to-remove)
        (bic--write-pending-flags mailbox full-uid flags-to-add flags-to-remove state-data)
        (list :existing state-data))
+      (`(:get-mailbox-tables ,mailbox)
+       (let ((overview-table (bic--read-overview state-data mailbox))
+	     (flags-table (bic--read-flags-table state-data mailbox))
+	     (uid-tree (gethash mailbox (plist-get state-data :uid-tree-per-mailbox))))
+	 (funcall callback (list overview-table flags-table uid-tree)))
+       (list :existing state-data :keep))
       (:deactivate
        (plist-put state-data :deactivated t)
        (fsm-send our-connection :stop)
