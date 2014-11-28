@@ -396,7 +396,8 @@ ACCOUNT is a string of the form \"username@server\"."
     (plist-put state-data :connection connection)
     (plist-put state-data :username username)
     (plist-put state-data :server server)
-    (list state-data nil)))
+    ;; After 60 seconds, consider connection attempt failed.
+    (list state-data 60)))
 
 (define-state bic-account :existing
   (fsm state-data event callback)
@@ -410,11 +411,19 @@ ACCOUNT is a string of the form \"username@server\"."
 		  reason
 		  keyword))
        (list :disconnected state-data))
+      (:timeout
+       (unless (plist-get state-data :ever-connected)
+	 (message "Initial connection to %s@%s timed out silently"
+		  (plist-get state-data :username)
+		  (plist-get state-data :server)))
+       (fsm-send our-connection :stop)
+       (plist-put state-data :connection nil)
+       (list :disconnected state-data))
       (`(:authenticated ,(pred (eq our-connection)))
        (list :connected state-data))
       (`(:flags ,mailbox ,full-uid ,flags-to-add ,flags-to-remove)
        (bic--write-pending-flags mailbox full-uid flags-to-add flags-to-remove state-data)
-       (list :existing state-data))
+       (list :existing state-data :keep))
       (`(:get-mailbox-tables ,mailbox)
        (let ((overview-table (bic--read-overview state-data mailbox))
 	     (flags-table (bic--read-flags-table state-data mailbox))
