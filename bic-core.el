@@ -548,34 +548,7 @@ proceed."
      (list :authenticated state-data))
 
     (`(:line ,line)
-     (pcase (bic--parse-line line)
-       (`("*" . ,rest)
-	(unless
-	    ;; maybe send results early
-	    (catch 'handled
-	      (dolist (early-callback
-		       (cl-second (car (plist-get state-data :pending-commands))))
-		(when (equal (nth (cl-first early-callback) rest)
-			     (cl-second early-callback))
-		  (funcall (cl-third early-callback) rest)
-		  (throw 'handled t))))
-	  ;; ...otherwise just store the line in the state.
-	  (plist-put state-data :response-acc
-		     (cons rest (plist-get state-data :response-acc)))))
-       (`("+" . ,_rest)
-	;; Continuation response.  XXX: do something sensible
-	)
-       (`(,tag ,type . ,rest)
-	(let* ((pending-commands (plist-get state-data :pending-commands))
-	       (entry (assoc tag pending-commands))
-	       (command-callback (cl-third entry))
-	       (new-pending-commands (delq entry pending-commands))
-	       (response-acc (plist-get state-data :response-acc)))
-	  (plist-put state-data :response-acc nil)
-	  (plist-put state-data :pending-commands new-pending-commands)
-	  (funcall command-callback (list type rest response-acc))))
-       (_
-	(fsm-debug-output "Unexpected line: '%s'" line)))
+     (bic--handle-line state-data line)
      (list :authenticated state-data))
 
     (`(:sentinel ,_process ,reason)
@@ -586,6 +559,36 @@ proceed."
 
     (:stop
      (bic--fail state-data :stopped "Stopped"))))
+
+(defun bic--handle-line (state-data line)
+  (pcase (bic--parse-line line)
+    (`("*" . ,rest)
+     (unless
+	 ;; maybe send results early
+	 (catch 'handled
+	   (dolist (early-callback
+		    (cl-second (car (plist-get state-data :pending-commands))))
+	     (when (equal (nth (cl-first early-callback) rest)
+			  (cl-second early-callback))
+	       (funcall (cl-third early-callback) rest)
+	       (throw 'handled t))))
+       ;; ...otherwise just store the line in the state.
+       (plist-put state-data :response-acc
+		  (cons rest (plist-get state-data :response-acc)))))
+    (`("+" . ,_rest)
+     ;; Continuation response.  XXX: do something sensible
+     )
+    (`(,tag ,type . ,rest)
+     (let* ((pending-commands (plist-get state-data :pending-commands))
+	    (entry (assoc tag pending-commands))
+	    (command-callback (cl-third entry))
+	    (new-pending-commands (delq entry pending-commands))
+	    (response-acc (plist-get state-data :response-acc)))
+       (plist-put state-data :response-acc nil)
+       (plist-put state-data :pending-commands new-pending-commands)
+       (funcall command-callback (list type rest response-acc))))
+    (_
+     (fsm-debug-output "Unexpected line: '%s'" line))))
 
 (defun bic-command (fsm command callback &optional early-callbacks)
   "Send an IMAP command.
