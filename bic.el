@@ -1201,20 +1201,21 @@ file and return t."
 	   file-offset)
        ;; Find sets of messages that have identical sets of flags
        ;; applied, to minimise the number of commands we need to send.
-       (with-temp-buffer
-	 (insert-file-contents-literally pending-flags-file)
-	 (goto-char (point-min))
-	 (while (search-forward-regexp
-		 (concat "^\\([0-9]+\\)-\\([0-9]+\\)\\([+-]\\)\\(.*\\)$")
-		 nil t)
-	   (let* ((uidvalidity (match-string 1))
-		  (uid (match-string 2))
-		  (add-remove (match-string 3))
-		  (flags (car (read-from-string (match-string 4)))))
-	     (if (string= uidvalidity mailbox-uidvalidity)
-		 (push uid (gethash (cons add-remove flags) flag-combinations))
-	       (cl-incf discarded))))
-	 (setq file-offset (point)))
+       (when (file-exists-p pending-flags-file)
+	 (with-temp-buffer
+	   (insert-file-contents-literally pending-flags-file)
+	   (goto-char (point-min))
+	   (while (search-forward-regexp
+		   (concat "^\\([0-9]+\\)-\\([0-9]+\\)\\([+-]\\)\\(.*\\)$")
+		   nil t)
+	     (let* ((uidvalidity (match-string 1))
+		    (uid (match-string 2))
+		    (add-remove (match-string 3))
+		    (flags (car (read-from-string (match-string 4)))))
+	       (if (string= uidvalidity mailbox-uidvalidity)
+		   (push uid (gethash (cons add-remove flags) flag-combinations))
+		 (cl-incf discarded))))
+	   (setq file-offset (point))))
        (unless (zerop discarded)
 	 (warn "Discarding %d pending flag changes for %s"
 	       discarded mailbox))
