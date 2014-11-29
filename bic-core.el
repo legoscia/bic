@@ -616,6 +616,46 @@ not included in the final response.  N starts at 0, and does not
 include the leading \"*\" tag."
   (fsm-send fsm `(:cmd ,command ,early-callbacks) callback))
 
+(defun bic-uids-command (fsm prefix uid-ranges suffix callback &optional early-callbacks)
+  "Send one or more IMAP commands, respecting length limits.
+The logical command to send is PREFIX, plus the uids in
+UID-RANGES, plus SUFFIX.  If the command would be longer than
+8192 octets (the limit recommended in RFC 7162), it is split into
+several commands, each dealing with part of the uid ranges.
+
+After all commands have been completed, CALLBACK is called with
+two arguments.  The first argument is the 'worst' response type
+received, i.e. `:ok' if all responses were \"OK\", `:no' if some
+were \"NO\" but none were \"BAD\", and `:bad' if at least one was
+\"BAD\".  The second argument is a list whose elements are of the
+form (RESPONSE TEXT RESPONSE-LINES).  See `bic-command' for the
+meaning of those values.
+
+For EARLY-CALLBACKS, see `bic-command'."
+  (let* ((ranges (bic-format-ranges-limit
+		  uid-ranges
+		  (- 8192 (length prefix) (length suffix))))
+	 (remaining (length ranges))
+	 responses
+	 (worst-response :ok)
+	 (one-callback
+	  (lambda (response)
+	    (cl-ecase (car response)
+	      (:ok t)
+	      (:no
+	       (when (eq worst-response :ok)
+		 (setq worst-response :no)))
+	      (:bad
+	       (setq worst-response :bad)))
+	    (push response responses)
+	    (decf remaining)
+	    (when (zerop remaining)
+	      (funcall callback worst-response (nreverse responses))))))
+    (or ranges (error "No UID ranges to send"))
+    (dolist (range ranges)
+      (fsm-send fsm (list :cmd (concat prefix range suffix) early-callbacks)
+		one-callback))))
+
 (defun bic--fail (state-data keyword reason)
   (plist-put state-data :fail-keyword keyword)
   (plist-put state-data :fail-reason reason)
@@ -1057,6 +1097,22 @@ formatted as integers."
 	   (_
 	    (error "Invalid number or range: %S" range-or-number))))
        (mapconcat 'identity (nreverse parts) ",")))))
+
+(defun bic-format-ranges-limit (ranges limit)
+  "Format RANGES into a set of IMAP ranges, each respecting LIMIT.
+Return a list of strings."
+  (let* ((all-ranges-string (bic-format-ranges ranges))
+	 (start 0)
+	 our-ranges)
+    (while (> (- (length all-ranges-string) start) limit)
+      (let ((break-at-comma
+	     (cl-position ?, all-ranges-string
+			  :start start :end (+ start limit 1) :from-end t)))
+	(or break-at-comma (error "Cannot break ranges into smaller ranges"))
+	(push (substring all-ranges-string start break-at-comma) our-ranges)
+	(setq start (1+ break-at-comma))))
+    (push (substring all-ranges-string start) our-ranges)
+    (nreverse our-ranges)))
 
 (defun bic-parse-sequence-set (sequence-set-string)
   "Parse a sequence set into ranges.

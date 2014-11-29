@@ -1293,47 +1293,53 @@ file and return t."
 	    (prefix (concat uidvalidity "-"))
 	    (overview-table (bic--read-overview state-data mailbox))
 	    uids)
-       ;; Find list of UIDs present in overview table.
-       (maphash
-	(lambda (full-uid _overview-data)
-	  (when (string-prefix-p prefix full-uid)
-	    (let ((uid (substring full-uid (1+ (cl-position ?- full-uid)))))
-	      (push uid uids))))
-	overview-table)
+
        ;; We can skip requesting flags for already downloaded messages
        ;; if there aren't any downloaded messages, or if the server
        ;; supports CONDSTORE, and the MODSEQ values match.
-       (when (and uids
+       (when (and (not (zerop (hash-table-count overview-table)))
 		  (or (null server-modseq)
 		      (null our-modseq)
 		      (bic--numeric-string-lessp our-modseq server-modseq)))
-	 (bic-command
+	 ;; Find list of UIDs present in overview table.
+	 (maphash
+	  (lambda (full-uid _overview-data)
+	    (when (string-prefix-p prefix full-uid)
+	      (let ((uid (substring full-uid (1+ (cl-position ?- full-uid)))))
+		(push uid uids))))
+	  overview-table)
+	 ;; XXX: if the mailbox has many messages, and the server
+	 ;; doesn't support CONDSTORE, this will take really long
+	 ;; time, as we unconditionally get the flag status of every
+	 ;; message we know about.
+	 (bic-uids-command
 	  connection
-	  (concat "UID FETCH "
-		  (bic-format-ranges
-		   (gnus-compress-sequence
-		    (sort (mapcar 'string-to-number uids) '<)
-		    t))
-		  (cond
-		   ((bic-connection--has-capability "CONDSTORE" connection)
-		    (if our-modseq
-			(concat " FLAGS (CHANGEDSINCE " our-modseq ")")
-		      " (FLAGS MODSEQ)"))
-		   (t
-		    " FLAGS")))
-	  (lambda (fetch-response)
-	    (pcase fetch-response
-	      (`(:ok ,resp ,fetched-messages)
-	       ;; TODO: any message we didn't get a response for was
-	       ;; deleted.
-	       (when fetched-messages
-		 (message "Extra response lines for FETCH: %S" fetched-messages))
-	       ;; Check for HIGHESTMODSEQ response code.
-	       ;; If none, use highest MODSEQ seen in FETCH responses.
-	       (when (string= (plist-get resp :code) "HIGHESTMODSEQ")
-		 (setq highest-modseq (plist-get resp :data))))
-	      (other
-	       (warn "FETCH request failed: %S" other))))
+	  "UID FETCH "
+	  (gnus-compress-sequence (sort (mapcar 'string-to-number uids) '<) t)
+	  (cond
+	   ((bic-connection--has-capability "CONDSTORE" connection)
+	    (if our-modseq
+		(concat " FLAGS (CHANGEDSINCE " our-modseq ")")
+	      " (FLAGS MODSEQ)"))
+	   (t
+	    " FLAGS"))
+	  (lambda (worst-response all-responses)
+	    (cl-ecase worst-response
+	      (:ok
+	       (let (extra-response-lines)
+		 (dolist (response all-responses)
+		   (setq extra-response-lines
+			 (append extra-response-lines (cl-third response)))
+		   (let ((resp (cl-second response)))
+		     ;; Check for HIGHESTMODSEQ response code.
+		     ;; If none, use highest MODSEQ seen in FETCH responses.
+		     (when (string= (plist-get resp :code) "HIGHESTMODSEQ")
+		       (setq highest-modseq (plist-get resp :data)))))
+		 (when extra-response-lines
+		   (message "Extra response lines for FETCH: %S" extra-response-lines))))
+	      ((:no :bad)
+	       (warn "FETCH request failed: %S"
+		     (cl-remove :ok all-responses :key #'car)))))
 	  (list
 	   (list 1 "FETCH"
 		 (lambda (one-fetch-response)
