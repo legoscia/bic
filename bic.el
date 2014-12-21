@@ -2317,11 +2317,11 @@ If there is no such buffer, return nil."
 	 ((= days 0)
 	  ;; same day: show time
 	  (format-time-string "     %H:%M" parsed-date))
-	 ((< days 365)
-	  ;; less than a year ago: show date without year
+	 ((< days 180)
+	  ;; less than half a year ago: show date without year
 	  (format "%10s" (format-time-string "%e %b" parsed-date)))
 	 (t
-	  ;; more than a year ago, or in the future: show YYYY-MM-DD
+	  ;; more than half a year ago, or in the future: show YYYY-MM-DD
 	  (format-time-string "%F" parsed-date)))))))
 
 (defun bic-mailbox-hide-read ()
