@@ -1205,7 +1205,7 @@ file and return t."
 	    (plist-get (cdr (assoc mailbox
 				   (plist-get state-data :mailboxes)))
 		       :uidvalidity))
-	   (flag-combinations (make-hash-table :test 'equal))
+	   (flag-change-uids (make-hash-table :test 'equal))
 	   (discarded 0)
 	   file-offset)
        ;; Find sets of messages that have identical sets of flags
@@ -1220,23 +1220,37 @@ file and return t."
 	     (let* ((uidvalidity (match-string 1))
 		    (uid (match-string 2))
 		    (add-remove (match-string 3))
-		    (flags (car (read-from-string (match-string 4)))))
+		    (flag (match-string 4))
+		    (opposite (car (remove add-remove '("+" "-")))))
 	       (if (string= uidvalidity mailbox-uidvalidity)
-		   (push uid (gethash (cons add-remove flags) flag-combinations))
+		   ;; The pending flags file may contain an
+		   ;; instruction to set a flag for a message and then
+		   ;; clear it, or vice versa.  Ensure that we only
+		   ;; apply the last such instruction.
+		   (let* ((opposite-key (cons opposite flag))
+			  (opposite-uids (gethash opposite-key flag-change-uids)))
+		     (when (member uid opposite-uids)
+		       (setq opposite-uids (delete uid opposite-uids))
+		       (if (null opposite-uids)
+			   (remhash opposite-key flag-change-uids)
+			 (puthash opposite-key
+				  opposite-uids
+				  flag-change-uids)))
+		     (push uid (gethash (cons add-remove flag) flag-change-uids)))
 		 (cl-incf discarded))))
 	   (setq file-offset (point))))
        (unless (zerop discarded)
 	 (warn "Discarding %d pending flag changes for %s"
 	       discarded mailbox))
-       (let ((remaining-entries-count (hash-table-count flag-combinations))
+       (let ((remaining-entries-count (hash-table-count flag-change-uids))
 	     (all-successful t))
 	 (if (zerop remaining-entries-count)
 	     ;; Nothing to do.
 	     (fsm-send fsm (list :task-finished task))
 	   (maphash
-	    (lambda (add-remove-flags uids)
-	      (let ((add-remove (car add-remove-flags))
-		    (flags (cdr add-remove-flags))
+	    (lambda (add-remove-flag uids)
+	      (let ((add-remove (car add-remove-flag))
+		    (flag (cdr add-remove-flag))
 		    (ranges
 		     (gnus-compress-sequence
 		      (sort (mapcar 'string-to-number uids) '<)
@@ -1249,8 +1263,7 @@ file and return t."
 		 (concat "UID STORE " (bic-format-ranges ranges) " "
 			 add-remove "FLAGS ("
 			 ;; No need to quote flags; they should be atoms.
-			 (mapconcat #'identity flags " ")
-			 ")")
+			 flag ")")
 		 (lambda (store-response)
 		   (cl-decf remaining-entries-count)
 		   (unless (eq (car store-response) :ok)
@@ -1276,7 +1289,7 @@ file and return t."
 					      mailbox
 					      one-fetch-response
 					      mailbox-uidvalidity))))))))
-	    flag-combinations)))))
+	    flag-change-uids)))))
     (`(,mailbox :sync-mailbox . ,_options)
      ;; At this point, we should have selected the mailbox already.
      (cl-assert (string= mailbox (plist-get state-data :selected)))
@@ -1832,16 +1845,10 @@ file and return t."
 				  (bic--mailbox-dir state-data mailbox))))
 	(when (or need-to-add need-to-remove)
 	  (with-temp-buffer
-	    (when need-to-add
-	      (insert full-uid "+")
-	      (let ((print-escape-newlines t))
-		(prin1 need-to-add (current-buffer)))
-	      (insert "\n"))
-	    (when need-to-remove
-	      (insert full-uid "-")
-	      (let ((print-escape-newlines t))
-		(prin1 need-to-remove (current-buffer)))
-	      (insert "\n"))
+	    (dolist (flag need-to-add)
+	      (insert full-uid "+" flag "\n"))
+	    (dolist (flag need-to-remove)
+	      (insert full-uid "-" flag "\n"))
 	    (write-region (point-min) (point-max)
 			  pending-flags-file :append :silent)))
 	(puthash full-uid
