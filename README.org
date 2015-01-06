@@ -71,7 +71,7 @@ directory; you can remove that if you want.
   unless they are unread or flagged.
 - It doesn't detect that messages have been deleted on the server.
 - Messages are not marked forwarded when you forward them.
-- There is currently no way to copy, move or delete messages.
+- There is currently no way to copy or move messages.
 - Messages are not threaded.
 - There is no search function.
 - The unread message count in the mailbox tree view is currently

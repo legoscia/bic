@@ -1242,7 +1242,8 @@ file and return t."
        (unless (zerop discarded)
 	 (warn "Discarding %d pending flag changes for %s"
 	       discarded mailbox))
-       (let ((remaining-entries-count (hash-table-count flag-change-uids))
+       (let ((c (plist-get state-data :connection))
+	     (remaining-entries-count (hash-table-count flag-change-uids))
 	     (all-successful t))
 	 (if (zerop remaining-entries-count)
 	     ;; Nothing to do.
@@ -1259,12 +1260,13 @@ file and return t."
 		;; numbers - but they're exact enough to represent 32-bit
 		;; integers.
 		(bic-command
-		 (plist-get state-data :connection)
+		 c
 		 (concat "UID STORE " (bic-format-ranges ranges) " "
 			 add-remove "FLAGS ("
 			 ;; No need to quote flags; they should be atoms.
 			 flag ")")
 		 (lambda (store-response)
+		   ;; XXX: check additional responses
 		   (cl-decf remaining-entries-count)
 		   (unless (eq (car store-response) :ok)
 		     (warn "Couldn't change flags in %s: %s"
@@ -1280,8 +1282,44 @@ file and return t."
 		       (with-temp-buffer
 			 (insert-file-contents-literally pending-flags-file)
 			 (write-region file-offset (point-max) pending-flags-file
-				       nil :silent)))
-		     (fsm-send fsm (list :task-finished task))))
+				       nil :silent))
+		       ;; If we added the \Deleted flag, also expunge:
+		       (pcase (gethash '("+" . "\\Deleted") flag-change-uids)
+			 (`nil
+			  ;; Nothing to expunge, task finished.
+			  (fsm-send fsm (list :task-finished task)))
+			 (deleted-uids
+			  (let ((expunge-command
+				 (if (bic-connection--has-capability "UIDPLUS" c)
+				     ;; We can use UID EXPUNGE to
+				     ;; expunge only the affected
+				     ;; messages.
+				     (concat
+				      "UID EXPUNGE "
+				      (bic-format-ranges
+				       (gnus-compress-sequence
+					(sort (mapcar #'string-to-number deleted-uids)
+					      #'<)
+					t)))
+				   ;; The server doesn't support
+				   ;; UIDPLUS.  Let's just expunge
+				   ;; everything that's marked
+				   ;; \Deleted, like Gnus does.
+				   "EXPUNGE")))
+			    (bic-command
+			     c expunge-command
+			     (lambda (expunge-response)
+			       (let ((response-lines (cl-third expunge-response)))
+				 (when response-lines
+				   ;; TODO: handle
+				   (warn "Unhandled responses to expunge request: %s"
+					 response-lines)))
+			       (unless (eq (car expunge-response) :ok)
+				 (warn "Couldn't expunge messages in %s: %s"
+				       mailbox
+				       (plist-get (cl-second expunge-response) :text)))
+			       ;; Done expunging, task finished.
+			       (fsm-send fsm (list :task-finished task))))))))))
 		 (list
 		  (list 1 "FETCH"
 			(lambda (one-fetch-response)
@@ -2118,6 +2156,11 @@ user expects."
   "Face used for messages marked as spam."
   :group 'bic)
 
+(defface bic-mailbox-deleted
+  '((t (:inherit gnus-summary-cancelled :strike-through t)))
+  "Face used for messages marked for deletion."
+  :group 'bic)
+
 (defvar-local bic--current-account nil)
 
 (defvar-local bic--current-mailbox nil)
@@ -2184,6 +2227,7 @@ If there is no such buffer, return nil."
     (define-key map (kbd "d") 'bic-message-mark-read)
     (define-key map (kbd "M-u") 'bic-message-mark-unread)
     (define-key map "!" 'bic-message-mark-flagged)
+    (define-key map (kbd "B DEL") 'bic-message-mark-deleted)
     (define-key map "$" 'bic-message-mark-spam)
     (define-key map "\M-$" 'bic-message-mark-not-spam)
     (define-key map "c" 'bic-mailbox-catchup)
@@ -2279,6 +2323,8 @@ If there is no such buffer, return nil."
 
 (defun bic-mailbox--face-from-flags (flags)
   (cond
+   ((member "\\Deleted" flags)
+    'bic-mailbox-deleted)
    ((member "$Junk" flags)
     'bic-mailbox-spam)
    ((member "\\Flagged" flags)
@@ -2332,7 +2378,8 @@ If there is no such buffer, return nil."
 	  (format-time-string "%F" parsed-date)))))))
 
 (defun bic-mailbox-hide-read ()
-  "Hide messages that are marked as read, but not flagged."
+  "Hide messages that are marked as read, but not flagged.
+Also hide messages marked for deletion."
   (interactive)
   (unless (derived-mode-p 'bic-mailbox-mode)
     (user-error "Not a mailbox buffer"))
@@ -2340,8 +2387,9 @@ If there is no such buffer, return nil."
    bic-mailbox--ewoc
    (lambda (full-uid)
      (let* ((flags (gethash full-uid bic-mailbox--flags-table)))
-       (or (member "\\Flagged" flags)
-	   (not (member "\\Seen" flags)))))))
+       (and (not (member "\\Deleted" flags))
+	    (or (member "\\Flagged" flags)
+		(not (member "\\Seen" flags))))))))
 
 (defun bic-mailbox-catchup ()
   "Mark all visible unread messages as read."
@@ -2464,6 +2512,7 @@ With prefix argument, don't mark message as read."
     (define-key map "d" 'bic-message-mark-read)
     (define-key map (kbd "M-u") 'bic-message-mark-unread)
     (define-key map "!" 'bic-message-mark-flagged)
+    (define-key map (kbd "B DEL") 'bic-message-mark-deleted)
     (define-key map "$" 'bic-message-mark-spam)
     (define-key map "\M-$" 'bic-message-mark-not-spam)
     ;; (define-key map (kbd "RET") 'bic-mailbox-read-message)
@@ -2543,21 +2592,24 @@ If ARG is a negative number, hide the unwanted header lines."
 
 (defun bic-message-mark-read ()
   "Mark the message at point as read.
-If the message is marked as flagged, remove the flag."
+If the message is marked as flagged, remove the flag.
+If the message is marked to be deleted, undelete it."
   (interactive)
-  (bic-message-flag '("\\Seen") '("\\Flagged")))
+  (bic-message-flag '("\\Seen") '("\\Flagged" "\\Deleted")))
 
 (defun bic-message-mark-unread ()
   "Mark the message at point as unread.
-If the message is marked as flagged, remove the flag."
+If the message is marked as flagged, remove the flag.
+If the message is marked to be deleted, undelete it."
   (interactive)
-  (bic-message-flag () '("\\Seen" "\\Flagged")))
+  (bic-message-flag () '("\\Seen" "\\Flagged" "\\Deleted")))
 
 (defun bic-message-mark-flagged ()
   "Mark the message at point as flagged.
-Also mark it as read."
+Also mark it as read.
+If the message is marked to be deleted, undelete it."
   (interactive)
-  (bic-message-flag '("\\Seen" "\\Flagged") ()))
+  (bic-message-flag '("\\Seen" "\\Flagged") '("\\Deleted")))
 
 (defun bic-message-mark-spam ()
   "Mark the message at point as spam (junk)."
@@ -2568,6 +2620,11 @@ Also mark it as read."
   "Mark the message at point as not spam (not junk)."
   (interactive)
   (bic-message-flag '("$NotJunk") '("$Junk")))
+
+(defun bic-message-mark-deleted ()
+  "Mark the message at point for deletion."
+  (interactive)
+  (bic-message-flag '("\\Deleted") ()))
 
 (defun bic-message-flag (flags-to-add flags-to-remove)
   "Add and remove flags for the message at point."
