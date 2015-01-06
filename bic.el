@@ -497,12 +497,15 @@ ACCOUNT is a string of the form \"username@server\"."
     ;; Get list of mailboxes
     (bic-command c
 		 (cond
-		  ((and (bic-connection--has-capability "LIST-EXTENDED" c)
-			(bic-connection--has-capability "LIST-STATUS" c)
-			(bic-connection--has-capability "CONDSTORE" c))
-		   "LIST \"\" \"*\" RETURN (SUBSCRIBED STATUS (UIDVALIDITY HIGHESTMODSEQ))")
 		  ((bic-connection--has-capability "LIST-EXTENDED" c)
-		   "LIST \"\" \"*\" RETURN (SUBSCRIBED)")
+		   (concat
+		    "LIST \"\" \"*\" RETURN (SUBSCRIBED"
+		    (when (and (bic-connection--has-capability "LIST-STATUS" c)
+			       (bic-connection--has-capability "CONDSTORE" c))
+		      " STATUS (UIDVALIDITY HIGHESTMODSEQ)")
+		    (when (bic-connection--has-capability "SPECIAL-USE" c)
+		      " SPECIAL-USE")
+		    ")"))
 		  (t
 		   "LIST \"\" \"*\""))
 		 (lambda (response)
