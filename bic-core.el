@@ -56,7 +56,7 @@ doesn't have that, we use a weak hash table instead.")
 
 (define-state-machine bic-connection
   :start ((username server connection-type
-		    &optional port callback auth-wait)
+		    &optional port callback auth-wait untagged-callback)
 	  "Start an IMAP connection.
 USERNAME is the username to authenticate as.
 SERVER is the server to connect to.
@@ -77,7 +77,12 @@ If AUTH-WAIT is provided and non-nil, we establish an encrypted
 connection, but don't proceed with authentication immediately.
 The CALLBACK will be called with a second argument of :auth-wait,
 and the caller needs to send :proceed using `fsm-send' to
-proceed."
+proceed.
+
+If UNTAGGED-CALLBACK is provided and non-nil, any untagged
+responses not explicitly handled will be passed to this function.
+It should take one argument, the line parsed as a list of tokens,
+omitting the leading \"*\"."
 	  (list :connecting
 		(list :name (concat username "@" server)
 		      :username username
@@ -85,7 +90,8 @@ proceed."
 		      :port port
 		      :connection-type connection-type
 		      :callback (or callback #'ignore)
-		      :auth-wait auth-wait))))
+		      :auth-wait auth-wait
+		      :untagged-callback untagged-callback))))
 
 (define-enter-state bic-connection :connecting
   (fsm state-data)
@@ -570,11 +576,23 @@ proceed."
 		    (cl-second (car (plist-get state-data :pending-commands))))
 	     (when (equal (nth (cl-first early-callback) rest)
 			  (cl-second early-callback))
-	       (funcall (cl-third early-callback) rest)
+	       ;; If `:keep' is specified instead of a function,
+	       ;; always keep the line for the final response.
+	       (if (eq (cl-third early-callback) :keep)
+		   (plist-put state-data :response-acc
+			      (cons rest (plist-get state-data :response-acc)))
+		 ;; Otherwise, pass matching lines to the callback
+		 ;; function.
+		 (funcall (cl-third early-callback) rest))
 	       (throw 'handled t))))
-       ;; ...otherwise just store the line in the state.
-       (plist-put state-data :response-acc
-		  (cons rest (plist-get state-data :response-acc)))))
+       ;; If there's a callback function for unmatched untagged
+       ;; response lines, call it...
+       (let ((untagged-callback (plist-get state-data :untagged-callback)))
+	 (if untagged-callback
+	     (funcall untagged-callback rest)
+	   ;; ...otherwise just store the line in the state.
+	   (plist-put state-data :response-acc
+		      (cons rest (plist-get state-data :response-acc)))))))
     (`("+" . ,_rest)
      ;; Continuation response.  XXX: do something sensible
      )
@@ -598,8 +616,10 @@ CALLBACK is a function that takes one argument of the form
 \(RESPONSE TEXT RESPONSE-LINES), where RESPONSE is a string
 containing the response type, typically \"OK\", \"NO\" or
 \"BAD\", TEXT is the rest of the tagged response line, and
-RESPONSE-LINES is a list of (TYPE TEXT) entries, one for
-each untagged response line.
+RESPONSE-LINES is a list of (TYPE TEXT) entries, one for each
+untagged response line.  If an UNTAGGED-CALLBACK was provided
+when the FSM was started, RESPONSE-LINES will be empty unless
+explicitly populated using EARLY-CALLBACKS.
 
 The callback function will be called when the command has
 finished.  There is no immediate response.
@@ -613,7 +633,9 @@ If the Nth word of a response line for this command is `equal'
 to RESPONSE-NAME, then FUNCTION is called with the response
 line as the only argument, and the response line in question is
 not included in the final response.  N starts at 0, and does not
-include the leading \"*\" tag."
+include the leading \"*\" tag.  Alternatively, the keyword `:keep' may
+be given for FUNCTION, in which case the matching line will be
+included in RESPONSE-LINES."
   (fsm-send fsm `(:cmd ,command ,early-callbacks) callback))
 
 (defun bic-uids-command (fsm prefix uid-ranges suffix callback &optional early-callbacks)

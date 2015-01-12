@@ -279,7 +279,8 @@ ACCOUNT is a string of the form \"username@server\"."
 		   port
 		   (lambda (connection status)
 		     (fsm-send fsm (list status connection)))
-		   :auth-wait)
+		   :auth-wait
+		   (apply-partially #'bic--untagged-callback fsm))
 		  candidate)))
 	     (plist-get state-data :candidates))))
        (plist-put state-data :candidate-connections candidate-connections)
@@ -374,7 +375,9 @@ ACCOUNT is a string of the form \"username@server\"."
 	     (0 nil)
 	     (port port))
 	   (lambda (connection status)
-	     (fsm-send fsm (list status connection))))))
+	     (fsm-send fsm (list status connection)))
+	   nil
+	   (apply-partially #'bic--untagged-callback fsm))))
     (let ((mailboxes (bic--directory-directories dir "[^.]")))
       (bic--store-initial-mailbox-list
        (plist-get state-data :address)
@@ -492,7 +495,8 @@ ACCOUNT is a string of the form \"username@server\"."
       (bic-command c
 		   ;; We're anonymous ourselves so far.
 		   "ID NIL"
-		   #'ignore))
+		   #'ignore
+		   '((0 "ID" ignore))))
 
     ;; Get list of mailboxes
     (bic-command c
@@ -509,7 +513,9 @@ ACCOUNT is a string of the form \"username@server\"."
 		  (t
 		   "LIST \"\" \"*\""))
 		 (lambda (response)
-		   (fsm-send fsm (list :list-response response)))))
+		   (fsm-send fsm (list :list-response response)))
+		 '((0 "LIST" :keep)
+		   (0 "STATUS" :keep))))
   (list state-data nil))
 
 (define-state bic-account :connected
@@ -569,6 +575,23 @@ ACCOUNT is a string of the form \"username@server\"."
 	   (plist-put state-data :current-task nil)
 	   (bic--maybe-next-task fsm state-data)))
 	(list :connected state-data nil))))
+    (`(:untagged-response ,untagged-response)
+     ;; XXX: check :selecting and :selected
+     (let ((selecting (plist-get state-data :selecting))
+	   (selected (plist-get state-data :selected)))
+       (pcase untagged-response
+	 (`("STATUS" ,mailbox-name ,status-att-list)
+	  (bic--handle-status-response
+	   fsm state-data mailbox-name status-att-list
+	   :queue-sync-tasks t)
+	  (list :connected state-data nil))
+	 ((guard selecting)
+	  (warn "Cannot handle untagged response %S: is it for '%s' or '%s'?"
+		untagged-response selecting selected)
+	  nil)
+	 (_
+	  (warn "Unexpected untagged response %S" untagged-response)
+	  nil))))
     (`(:early-fetch-response ,selected-mailbox ,msg ,uidvalidity)
      (let* ((dir (bic--mailbox-dir state-data selected-mailbox))
 	    (overview-file (expand-file-name "overview" dir))
@@ -794,6 +817,9 @@ ACCOUNT is a string of the form \"username@server\"."
     (:stop
      (list nil state-data))))
 
+(defun bic--untagged-callback (fsm untagged-response)
+  (fsm-send fsm (list :untagged-response untagged-response)))
+
 (defun bic--update-account-state (account new-state)
   (let ((old-state (gethash account bic-account-state-table)))
     (unless (eq old-state new-state)
@@ -848,7 +874,7 @@ It also includes underscore, which is used as an escape character.")
 	 ;; asked for mailbox subscription information.
 	 (subscription-return
 	  (bic-connection--has-capability "LIST-EXTENDED" (plist-get state-data :connection)))
-	 mailboxes)
+	 mailboxes status-responses)
     ;; XXX: do we really always overwrite mailbox information?
     ;; Need to reverse responses, so we get LIST before STATUS.
     (dolist (x (nreverse list-data))
@@ -866,18 +892,10 @@ It also includes underscore, which is used as an escape character.")
 	    (list mailbox-name
 		  :attributes (append subscription-attribute attributes))
 	    mailboxes)))
-	(`("STATUS" ,mailbox-name ,status-att-list)
-	 (let ((mailbox-entry (assoc mailbox-name mailboxes)))
-	   (if (null mailbox-entry)
-	       (warn "STATUS response for unknown mailbox %S" mailbox-name)
-	     (pcase (member "UIDVALIDITY" status-att-list)
-	       (`("UIDVALIDITY" ,uidvalidity . ,_)
-		(setf (cdr mailbox-entry)
-		      (plist-put (cdr mailbox-entry) :uidvalidity uidvalidity))))
-	     (pcase (member "HIGHESTMODSEQ" status-att-list)
-	       (`("HIGHESTMODSEQ" ,highest-modseq . ,_)
-		(setf (cdr mailbox-entry)
-		      (plist-put (cdr mailbox-entry) :server-modseq highest-modseq)))))))
+	;; Need to buffer STATUS responses here, as we haven't
+	;; populated the mailbox list yet.
+	(`("STATUS" ,_mailbox-name ,_status-att-list)
+	 (push x status-responses))
 	(_
 	 (warn "Unexpected LIST response: %S" x))))
     (mapc
@@ -905,6 +923,12 @@ It also includes underscore, which is used as an escape character.")
      mailboxes)
     ;; Modify state-data in place:
     (plist-put state-data :mailboxes mailboxes)
+    ;; Take STATUS responses into account
+    (dolist (status-response status-responses)
+      (bic--handle-status-response
+       fsm state-data (cl-second status-response) (cl-third status-response)
+       ;; Don't sync just yet.
+       :queue-sync-tasks nil))
     (bic--store-initial-mailbox-list (plist-get state-data :address) mailboxes)
     (if subscription-return
 	;; If we have subscription info, we can sync mailboxes.
@@ -914,7 +938,27 @@ It also includes underscore, which is used as an escape character.")
        (plist-get state-data :connection)
        "LSUB \"\" \"*\""
        (lambda (response)
-    	 (fsm-send fsm (list :lsub-response response)))))))
+    	 (fsm-send fsm (list :lsub-response response)))
+       '((0 "LSUB" :keep))))))
+
+(cl-defun bic--handle-status-response (fsm state-data mailbox-name status-att-list
+					   &key queue-sync-tasks)
+  (let* ((mailboxes (plist-get state-data :mailboxes))
+	 (mailbox-entry (assoc mailbox-name mailboxes)))
+    (if (null mailbox-entry)
+	(warn "STATUS response for unknown mailbox %S" mailbox-name)
+      (pcase (member "UIDVALIDITY" status-att-list)
+	(`("UIDVALIDITY" ,uidvalidity . ,_)
+	 (setf (cdr mailbox-entry)
+	       (plist-put (cdr mailbox-entry) :uidvalidity uidvalidity))))
+      (pcase (member "HIGHESTMODSEQ" status-att-list)
+	(`("HIGHESTMODSEQ" ,highest-modseq . ,_)
+	 (setf (cdr mailbox-entry)
+	       (plist-put (cdr mailbox-entry) :server-modseq highest-modseq))))
+      (when queue-sync-tasks
+	(pcase (bic--mailbox-sync-task state-data mailbox-entry)
+	  (`(,task)
+	   (bic--queue-task-if-new state-data task)))))))
 
 (defun bic--handle-lsub-response (_fsm state-data lsub-data)
   (let ((mailboxes (plist-get state-data :mailboxes))
@@ -958,33 +1002,39 @@ It also includes underscore, which is used as an escape character.")
   (let ((download-messages-tasks
 	 (cl-mapcan
 	  (lambda (mailbox-data)
-	    (let* ((dir (bic--mailbox-dir state-data (car mailbox-data)))
-		   (modseq-file (expand-file-name "modseq" dir))
-		   (needs-sync
-		    (or (not (file-exists-p modseq-file))
-			(null (plist-get (cdr mailbox-data) :uidvalidity))
-			(null (plist-get (cdr mailbox-data) :server-modseq))
-			(let ((our-modseq-pair
-			       (with-temp-buffer
-				 (insert-file-contents-literally modseq-file)
-				 (split-string (buffer-string) "-"))))
-			  (or (not (string=
-				    (car our-modseq-pair)
-				    (plist-get (cdr mailbox-data) :uidvalidity)))
-			      (bic--numeric-string-lessp
-			       (cadr our-modseq-pair)
-			       (plist-get (cdr mailbox-data) :server-modseq)))))))
-	      (when needs-sync
-		(cl-case (bic--mailbox-sync-level state-data (car mailbox-data))
-		  (:unlimited-sync
-		   (list (list (car mailbox-data) :sync-mailbox)))
-		  (:partial-sync
-		   (list (list (car mailbox-data) :sync-mailbox :limit 100)))))))
+	    (bic--mailbox-sync-task state-data mailbox-data))
 	  (plist-get state-data :mailboxes))))
     (plist-put state-data :tasks
 	       (append (plist-get state-data :tasks)
 		       download-messages-tasks))
     (fsm-send fsm (list :task-finished task))))
+
+(defun bic--mailbox-sync-task (state-data mailbox-data)
+  "Check whether to sync a mailbox.
+If sync needed, return a list of one task.
+If no sync needed, return an empty list."
+  (let* ((dir (bic--mailbox-dir state-data (car mailbox-data)))
+	 (modseq-file (expand-file-name "modseq" dir))
+	 (needs-sync
+	  (or (not (file-exists-p modseq-file))
+	      (null (plist-get (cdr mailbox-data) :uidvalidity))
+	      (null (plist-get (cdr mailbox-data) :server-modseq))
+	      (let ((our-modseq-pair
+		     (with-temp-buffer
+		       (insert-file-contents-literally modseq-file)
+		       (split-string (buffer-string) "-"))))
+		(or (not (string=
+			  (car our-modseq-pair)
+			  (plist-get (cdr mailbox-data) :uidvalidity)))
+		    (bic--numeric-string-lessp
+		     (cadr our-modseq-pair)
+		     (plist-get (cdr mailbox-data) :server-modseq)))))))
+    (when needs-sync
+      (cl-case (bic--mailbox-sync-level state-data (car mailbox-data))
+	(:unlimited-sync
+	 (list (list (car mailbox-data) :sync-mailbox)))
+	(:partial-sync
+	 (list (list (car mailbox-data) :sync-mailbox :limit 100)))))))
 
 (defun bic--set-sync-level (state-data mailbox new-sync-level)
   "Update sync level for MAILBOX in STATE-DATA.
@@ -1195,7 +1245,12 @@ file and return t."
 	     (when (bic-connection--has-capability "CONDSTORE" c)
 	       " (CONDSTORE)"))
      (lambda (select-response)
-       (fsm-send fsm (list :select-response mailbox select-response))))))
+       (fsm-send fsm (list :select-response mailbox select-response)))
+     ;; XXX: more :keep "callbacks"?
+     '((0 :ok :keep)
+       (0 "FLAGS" :keep)
+       (1 "EXISTS" :keep)
+       (1 "RECENT" ignore)))))
 
 (defun bic--do-task (fsm state-data task)
   (pcase task
@@ -1423,7 +1478,9 @@ file and return t."
 	    (`(:ok ,_ ,search-data)
 	     (setq unseen-flagged-search-data search-data))
 	    (other
-	     (warn "SEARCH for unseen/flagged messages failed: %S" other)))))
+	     (warn "SEARCH for unseen/flagged messages failed: %S" other))))
+	'((0 "SEARCH" :keep)
+	  (0 "ESEARCH" :keep)))
        (bic-command
 	(plist-get state-data :connection)
 	(concat "UID SEARCH "
@@ -1443,7 +1500,9 @@ file and return t."
 	  (bic--handle-search-response
 	   fsm state-data task
 	   unseen-flagged-search-data recent-search-data
-	   highest-modseq server-modseq)))))
+	   highest-modseq server-modseq))
+	'((0 "SEARCH" :keep)
+	  (0 "ESEARCH" :keep)))))
 
     (`(,mailbox :expunge-messages . ,sequence-numbers)
      (cl-assert (string= mailbox (plist-get state-data :selected)))
@@ -1465,6 +1524,7 @@ file and return t."
 	    (highest-expunged (>= max exists)))
        (bic-command
 	connection
+	;; TODO: use ESEARCH if available?
 	(format "UID SEARCH %s:%s"
 		;; Ask for all message sequence numbers starting from
 		;; one below the lowest that has been expunged.  If
@@ -1524,7 +1584,9 @@ file and return t."
 			 ))))))
 	    (search-error
 	     (warn "Error in response to SEARCH: %S" search-error)))
-	  (fsm-send fsm (list :task-finished task))))))
+	  (fsm-send fsm (list :task-finished task)))
+	'((0 "SEARCH" :keep)
+	  (0 "ESEARCH" :keep)))))
     (`(:any-mailbox :sync-mailboxes)
      (bic--sync-mailboxes fsm state-data task))
     (`(:any-mailbox :subscribe ,mailbox)
