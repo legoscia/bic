@@ -1064,8 +1064,8 @@ file and return t."
       (write-region
        (point-min) (point-min)
        (expand-file-name
-	(bic--mailbox-dir state-data mailbox)
-	"want-subscribed")
+	"want-subscribed"
+	(bic--mailbox-dir state-data mailbox))
        nil :silent)
       t)))
 
