@@ -589,6 +589,23 @@ ACCOUNT is a string of the form \"username@server\"."
 	  (warn "Cannot handle untagged response %S: is it for '%s' or '%s'?"
 		untagged-response selecting selected)
 	  nil)
+	 (`(,seq-no "EXPUNGE")
+	  ;; A somewhat complicated dance to ensure that after receiving
+	  ;; EXPUNGE responses, we'll exit IDLE, and run the expunge task
+	  ;; once and only once, with all received message sequence
+	  ;; numbers.  Thus we build the task using `nconc', and add
+	  ;; it with `bic--queue-task-if-new', which skips duplicate
+	  ;; tasks.
+	  (let ((expunge-task (plist-get state-data :expunge-task)))
+	    (when (or (null expunge-task)
+		      (not (string= (car expunge-task) selected)))
+	      (setq expunge-task (list selected :expunge-messages))
+	      (plist-put state-data :expunge-task expunge-task))
+	    (nconc expunge-task (list seq-no))
+	    (bic--queue-task-if-new state-data expunge-task)
+	    (bic--maybe-next-task fsm state-data)
+	    ;; TODO: decremend "EXISTS" value for current mailbox
+	    (list :connected state-data nil)))
 	 (_
 	  (warn "Unexpected untagged response %S" untagged-response)
 	  nil))))
@@ -1654,18 +1671,7 @@ file and return t."
       ;; that the server always sends EXISTS along with RECENT,
       ;; we can ignore this.
       (list 1 "RECENT" #'ignore)
-      (list 0 "FLAGS" #'ignore)
-      ;; A somewhat complicated dance to ensure that after receiving
-      ;; EXPUNGE responses, we'll exit IDLE, and run the expunge task
-      ;; once and only once, with all received message sequence
-      ;; numbers.  Thus we build the task using `nconc', and send it
-      ;; off with `:queue-task', which skips duplicate tasks.
-      (list 1 "EXPUNGE"
-	    (lambda (expunge-response)
-	      (nconc expunge-task (list (cl-first expunge-response)))
-	      (fsm-send
-	       fsm
-	       `(:queue-task ,expunge-task))))))))
+      (list 0 "FLAGS" #'ignore)))))
 
 (defun bic--idle-done (fsm state-data)
   (let ((idle-gensym (cl-second (plist-get state-data :current-task))))
