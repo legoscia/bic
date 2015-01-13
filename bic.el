@@ -703,7 +703,8 @@ ACCOUNT is a string of the form \"username@server\"."
      (when (bic--set-sync-level state-data mailbox new-sync-level)
        (bic--queue-task-if-new
 	state-data
-	(list :any-mailbox :subscribe mailbox)))
+	(list :any-mailbox :subscribe mailbox))
+       (bic--maybe-next-task fsm state-data))
      (list :connected state-data))
 
     (`(:queue-task ,new-task)
@@ -958,7 +959,8 @@ It also includes underscore, which is used as an escape character.")
       (when queue-sync-tasks
 	(pcase (bic--mailbox-sync-task state-data mailbox-entry)
 	  (`(,task)
-	   (bic--queue-task-if-new state-data task)))))))
+	   (bic--queue-task-if-new state-data task)
+	   (bic--maybe-next-task fsm state-data)))))))
 
 (defun bic--handle-lsub-response (_fsm state-data lsub-data)
   (let ((mailboxes (plist-get state-data :mailboxes))
