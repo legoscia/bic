@@ -1732,12 +1732,13 @@ file and return t."
      (t
       (setq fetch-these (gnus-range-add unseen-flagged-ranges recent-ranges))))
 
-    (cl-flet
-	((uid-overview (uid)
-		       (gethash (concat uidvalidity "-" (bic-number-to-string uid))
-				overview-table))
+    (let
+	((uid-overview
+	  (lambda (uid)
+	    (gethash (concat uidvalidity "-" (bic-number-to-string uid))
+		     overview-table)))
 	 (write-modseq
-	  ()
+	  (lambda ()
 	  ;; The server told us the new MODSEQ value when we selected
 	  ;; the mailbox.  We retrieved all flag changes since our
 	  ;; previously recorded MODSEQ value, and all new messages
@@ -1748,7 +1749,7 @@ file and return t."
 		   (modseq-file (expand-file-name "modseq" dir)))
 	      (bic--write-string-to-file
 	       (concat uidvalidity "-" server-modseq)
-	       modseq-file)))))
+	       modseq-file))))))
       ;; Now we know which messages we're not going to fetch because
       ;; they exceed the limit.  If they haven't been downloaded
       ;; already, warn about it.
@@ -1756,7 +1757,7 @@ file and return t."
       ;; 	       (cl-remove-if #'uid-overview not-these-unseen)
       ;; 	       (cl-remove-if #'uid-overview not-these-recent))
       (cond
-       ((cl-member-if-not #'uid-overview (gnus-uncompress-range not-these-unseen))
+       ((cl-member-if-not uid-overview (gnus-uncompress-range not-these-unseen))
 	(unless (plist-get mailbox-entry :not-all-unread)
 	  (warn "%s (%s) has too many new/flagged messages!  Limiting to the latest %d"
 		mailbox (plist-get state-data :address) limit)
@@ -1765,7 +1766,7 @@ file and return t."
 	   (plist-get state-data :address)
 	   mailbox
 	   (plist-put mailbox-entry :not-all-unread t))))
-       ((cl-member-if-not #'uid-overview (gnus-uncompress-range not-these-recent))
+       ((cl-member-if-not uid-overview (gnus-uncompress-range not-these-recent))
 	(unless (plist-get mailbox-entry :not-all-recent)
 	  ;; TODO: improve wording
 	  (warn "%s (%s) has too many recent messages!  Limiting to the latest %d"
@@ -1778,9 +1779,9 @@ file and return t."
 
       ;; Don't fetch messages we've already downloaded.
       ;; TODO: is it possible that we have the envelope, but not the body?
-      (pcase (cl-delete-if #'uid-overview (gnus-uncompress-range fetch-these))
+      (pcase (cl-delete-if uid-overview (gnus-uncompress-range fetch-these))
 	(`nil
-	 (write-modseq)
+	 (funcall write-modseq)
 	 (message "Nothing to fetch from %s for %s"
 		  mailbox (plist-get state-data :address))
 	 (fsm-send fsm (list :task-finished task)))
@@ -1814,7 +1815,7 @@ file and return t."
 		 (when fetched-messages
 		   (message "Extra response lines for FETCH: %S" fetched-messages))
 		 ;; TODO: can we use highest-modseq for anything?
-		 (write-modseq))
+		 (funcall write-modseq))
 		(other
 		 (warn "FETCH request failed: %S" other)))
 	      (fsm-send fsm (list :task-finished task)))
