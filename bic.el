@@ -1636,8 +1636,7 @@ file and return t."
 				(lambda ()
 				  (fsm-send fsm (list :idle-timeout idle-gensym)))))
 	 (mailbox (plist-get state-data :selected))
-	 (mailbox-plist (cdr (assoc mailbox (plist-get state-data :mailboxes))))
-	 (expunge-task (list mailbox :expunge-messages)))
+	 (mailbox-plist (cdr (assoc mailbox (plist-get state-data :mailboxes)))))
     (plist-put state-data :current-task (list :idle idle-gensym timer))
     (bic-command
      (plist-get state-data :connection)
