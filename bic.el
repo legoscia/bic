@@ -2307,6 +2307,7 @@ If there is no such buffer, return nil."
     (define-key map "$" 'bic-message-mark-spam)
     (define-key map "\M-$" 'bic-message-mark-not-spam)
     (define-key map "c" 'bic-mailbox-catchup)
+    (define-key map "n" 'bic-mailbox-next-unread)
     map))
 
 (define-derived-mode bic-mailbox-mode special-mode "BIC mailbox"
@@ -2523,7 +2524,40 @@ With prefix argument, don't mark message as read."
 			 bic--current-mailbox
 			 msg)
     (unless keep-unread
-      (bic-message-flag '("\\Seen") '()))))
+      (bic-message-flag '("\\Seen") '() msg))))
+
+(defun bic-mailbox-next-unread ()
+  "Open the next unread message."
+  (interactive)
+  (let (current-node)
+    (with-current-buffer
+	(cond
+	 ((derived-mode-p 'bic-mailbox-mode)
+	  (setq current-node (ewoc-locate bic-mailbox--ewoc))
+	  (current-buffer))
+	 ((derived-mode-p 'bic-message-mode)
+	  (let ((mailbox-buffer (bic-mailbox--find-buffer
+				 bic--current-account bic--current-mailbox)))
+	    (unless mailbox-buffer
+	      (user-error "Cannot find mailbox buffer for %s of %s"
+			  bic--current-mailbox bic--current-account))
+	    (setq current-node
+		  (gethash bic-message--full-uid
+			   (buffer-local-value 'bic-mailbox--ewoc-nodes-table mailbox-buffer)))
+	    mailbox-buffer))
+	 (t
+	  (user-error "Not in message or mailbox buffer")))
+      (let ((next-node current-node))
+	(while
+	    (progn
+	      (setq next-node (ewoc-next bic-mailbox--ewoc next-node))
+	      (and next-node
+		   (member "\\Seen"
+			   (gethash (ewoc-data next-node) bic-mailbox--flags-table)))))
+	(unless next-node
+	  (user-error "No more unread messages"))
+	(ewoc-goto-node bic-mailbox--ewoc next-node)
+	(bic-mailbox-read-message nil)))))
 
 (defun bic-mailbox--maybe-update-message (address mailbox full-uid)
   (pcase (bic-mailbox--find-buffer address mailbox)
@@ -2594,6 +2628,7 @@ With prefix argument, don't mark message as read."
     ;; (define-key map (kbd "RET") 'bic-mailbox-read-message)
     (define-key map "t" 'bic-message-toggle-header)
     (define-key map "W" 'gnus-summary-wash-map)
+    (define-key map "n" 'bic-mailbox-next-unread)
     map))
 
 (define-derived-mode bic-message-mode gnus-article-mode "BIC Message"
@@ -2702,9 +2737,9 @@ If the message is marked to be deleted, undelete it."
   (interactive)
   (bic-message-flag-maybe-advance '("\\Deleted") ()))
 
-(defun bic-message-flag (flags-to-add flags-to-remove)
+(defun bic-message-flag (flags-to-add flags-to-remove &optional full-uid)
   "Add and remove flags for the message at point."
-  (let ((full-uid (bic--find-message-at-point))
+  (let ((full-uid (or full-uid (bic--find-message-at-point)))
 	(fsm (bic--find-account bic--current-account)))
     (fsm-send
      fsm
