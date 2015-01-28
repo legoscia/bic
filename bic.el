@@ -1103,7 +1103,10 @@ file and return t."
       (if (eq explicit-sync-level :no-sync)
 	  nil
 	explicit-sync-level))
-     ((cl-member "\\Subscribed" attributes :test #'cl-equalp)
+     ((and (cl-member "\\Subscribed" attributes :test #'cl-equalp)
+	   ;; If this is a virtual "all mail" mailbox, don't
+	   ;; sync it implicitly.
+	   (not (cl-member "\\All" attributes :test #'cl-equalp)))
       :partial-sync))))
 
 (defun bic--store-initial-mailbox-list (address mailboxes)
