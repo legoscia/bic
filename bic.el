@@ -2671,36 +2671,36 @@ If ARG is a negative number, hide the unwanted header lines."
 If the message is marked as flagged, remove the flag.
 If the message is marked to be deleted, undelete it."
   (interactive)
-  (bic-message-flag '("\\Seen") '("\\Flagged" "\\Deleted")))
+  (bic-message-flag-maybe-advance '("\\Seen") '("\\Flagged" "\\Deleted")))
 
 (defun bic-message-mark-unread ()
   "Mark the message at point as unread.
 If the message is marked as flagged, remove the flag.
 If the message is marked to be deleted, undelete it."
   (interactive)
-  (bic-message-flag () '("\\Seen" "\\Flagged" "\\Deleted")))
+  (bic-message-flag-maybe-advance () '("\\Seen" "\\Flagged" "\\Deleted")))
 
 (defun bic-message-mark-flagged ()
   "Mark the message at point as flagged.
 Also mark it as read.
 If the message is marked to be deleted, undelete it."
   (interactive)
-  (bic-message-flag '("\\Seen" "\\Flagged") '("\\Deleted")))
+  (bic-message-flag-maybe-advance '("\\Seen" "\\Flagged") '("\\Deleted")))
 
 (defun bic-message-mark-spam ()
   "Mark the message at point as spam (junk)."
   (interactive)
-  (bic-message-flag '("$Junk") '("$NotJunk")))
+  (bic-message-flag-maybe-advance '("$Junk") '("$NotJunk")))
 
 (defun bic-message-mark-not-spam ()
   "Mark the message at point as not spam (not junk)."
   (interactive)
-  (bic-message-flag '("$NotJunk") '("$Junk")))
+  (bic-message-flag-maybe-advance '("$NotJunk") '("$Junk")))
 
 (defun bic-message-mark-deleted ()
   "Mark the message at point for deletion."
   (interactive)
-  (bic-message-flag '("\\Deleted") ()))
+  (bic-message-flag-maybe-advance '("\\Deleted") ()))
 
 (defun bic-message-flag (flags-to-add flags-to-remove)
   "Add and remove flags for the message at point."
@@ -2709,6 +2709,14 @@ If the message is marked to be deleted, undelete it."
     (fsm-send
      fsm
      (list :flags bic--current-mailbox full-uid flags-to-add flags-to-remove))))
+
+(defun bic-message-flag-maybe-advance (flags-to-add flags-to-remove)
+  "Add and remove flags, and maybe advance to next message.
+If point is in a mailbox buffer (not a message buffer),
+move point to the next message."
+  (bic-message-flag flags-to-add flags-to-remove)
+  (when (derived-mode-p 'bic-mailbox-mode)
+    (ignore-errors (ewoc-goto-next bic-mailbox--ewoc 1))))
 
 (defun bic-message-reply (&optional wide)
   "Compose a reply to the current message."
