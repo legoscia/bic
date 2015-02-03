@@ -1528,6 +1528,8 @@ file and return t."
 
     (`(,mailbox :expunge-messages . ,sequence-numbers)
      (cl-assert (string= mailbox (plist-get state-data :selected)))
+     (when (eq task (plist-get state-data :expunge-task))
+       (plist-put state-data :expunge-task nil))
      ;; Since we don't (yet?) maintain a mapping of sequence numbers
      ;; to UIDs, we need to issue a SEARCH command to find out which
      ;; messages are affected.
