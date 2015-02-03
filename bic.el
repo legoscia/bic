@@ -1429,7 +1429,8 @@ file and return t."
        ;; if there aren't any downloaded messages, or if the server
        ;; supports CONDSTORE, and the MODSEQ values match.
        (when (and (not (zerop (hash-table-count overview-table)))
-		  (or (null server-modseq)
+		  (or (not (bic-connection--has-capability "CONDSTORE" connection))
+		      (null server-modseq)
 		      (null our-modseq)
 		      (bic--numeric-string-lessp our-modseq server-modseq)))
 	 ;; Find list of UIDs present in overview table.
