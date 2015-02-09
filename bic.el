@@ -2532,24 +2532,23 @@ With prefix argument, don't mark message as read."
 (defun bic-mailbox-next-unread ()
   "Open the next unread message."
   (interactive)
-  (let (current-node)
-    (with-current-buffer
-	(cond
-	 ((derived-mode-p 'bic-mailbox-mode)
-	  (setq current-node (ewoc-locate bic-mailbox--ewoc))
-	  (current-buffer))
-	 ((derived-mode-p 'bic-message-mode)
-	  (let ((mailbox-buffer (bic-mailbox--find-buffer
-				 bic--current-account bic--current-mailbox)))
-	    (unless mailbox-buffer
-	      (user-error "Cannot find mailbox buffer for %s of %s"
-			  bic--current-mailbox bic--current-account))
-	    (setq current-node
-		  (gethash bic-message--full-uid
-			   (buffer-local-value 'bic-mailbox--ewoc-nodes-table mailbox-buffer)))
-	    mailbox-buffer))
-	 (t
-	  (user-error "Not in message or mailbox buffer")))
+  (let (mailbox-buffer current-node)
+    (cond
+     ((derived-mode-p 'bic-mailbox-mode)
+      (setq current-node (ewoc-locate bic-mailbox--ewoc)
+	    mailbox-buffer (current-buffer)))
+     ((derived-mode-p 'bic-message-mode)
+      (setq mailbox-buffer (bic-mailbox--find-buffer
+			    bic--current-account bic--current-mailbox))
+      (unless mailbox-buffer
+	(user-error "Cannot find mailbox buffer for %s of %s"
+		    bic--current-mailbox bic--current-account))
+      (setq current-node
+	    (gethash bic-message--full-uid
+		     (buffer-local-value 'bic-mailbox--ewoc-nodes-table mailbox-buffer))))
+     (t
+      (user-error "Not in message or mailbox buffer")))
+    (with-current-buffer mailbox-buffer
       (let ((next-node current-node))
 	(while
 	    (progn
@@ -2559,7 +2558,14 @@ With prefix argument, don't mark message as read."
 			   (gethash (ewoc-data next-node) bic-mailbox--flags-table)))))
 	(unless next-node
 	  (user-error "No more unread messages"))
-	(ewoc-goto-node bic-mailbox--ewoc next-node)
+	(let ((mailbox-window (get-buffer-window mailbox-buffer)))
+	  ;; Complicated dance to ensure that we advance point
+	  ;; regardless of whether the mailbox buffer is visible or
+	  ;; not.
+	  (if mailbox-window
+	      (with-selected-window mailbox-window
+		(ewoc-goto-node bic-mailbox--ewoc next-node))
+	    (ewoc-goto-node bic-mailbox--ewoc next-node)))
 	(bic-mailbox-read-message nil)))))
 
 (defun bic-mailbox--maybe-update-message (address mailbox full-uid)
