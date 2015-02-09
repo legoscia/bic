@@ -2311,6 +2311,7 @@ If there is no such buffer, return nil."
     (define-key map "\M-$" 'bic-message-mark-not-spam)
     (define-key map "c" 'bic-mailbox-catchup)
     (define-key map "n" 'bic-mailbox-next-unread)
+    (define-key map " " 'bic-mailbox-next-page-or-next-unread)
     map))
 
 (define-derived-mode bic-mailbox-mode special-mode "BIC mailbox"
@@ -2568,6 +2569,20 @@ With prefix argument, don't mark message as read."
 	    (ewoc-goto-node bic-mailbox--ewoc next-node)))
 	(bic-mailbox-read-message nil)))))
 
+(defun bic-mailbox-next-page-or-next-unread ()
+  "Show next page of message.
+If at the end of the message, show next unread message."
+  (interactive)
+  (let* ((message-buffer (get-buffer "*BIC-Message*"))
+	 (message-window (and message-buffer (get-buffer-window message-buffer))))
+    (if (null message-window)
+	;; No message is being displayed; open the next one.
+	(bic-mailbox-next-unread)
+      ;; Message displayed; scroll or move to next.
+      (with-selected-window message-window
+	(when (gnus-article-next-page)
+	  (bic-mailbox-next-unread))))))
+
 (defun bic-mailbox--maybe-update-message (address mailbox full-uid)
   (pcase (bic-mailbox--find-buffer address mailbox)
     ((and (pred bufferp) mailbox-buffer)
@@ -2638,6 +2653,7 @@ With prefix argument, don't mark message as read."
     (define-key map "t" 'bic-message-toggle-header)
     (define-key map "W" 'gnus-summary-wash-map)
     (define-key map "n" 'bic-mailbox-next-unread)
+    (define-key map " " 'bic-mailbox-next-page-or-next-unread)
     map))
 
 (define-derived-mode bic-message-mode gnus-article-mode "BIC Message"
