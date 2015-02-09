@@ -518,9 +518,10 @@ ACCOUNT is a string of the form \"username@server\"."
 		  ((bic-connection--has-capability "LIST-EXTENDED" c)
 		   (concat
 		    "LIST \"\" \"*\" RETURN (SUBSCRIBED"
-		    (when (and (bic-connection--has-capability "LIST-STATUS" c)
-			       (bic-connection--has-capability "CONDSTORE" c))
-		      " STATUS (UIDVALIDITY HIGHESTMODSEQ)")
+		    (when (bic-connection--has-capability "LIST-STATUS" c)
+		      (concat " STATUS ("
+			      (bic--interesting-status-items c)
+			      ")"))
 		    (when (bic-connection--has-capability "SPECIAL-USE" c)
 		      " SPECIAL-USE")
 		    ")"))
@@ -1649,6 +1650,11 @@ file and return t."
      (bic-command (plist-get state-data :connection) "LOGOUT" #'ignore))
     (_
      (warn "Unknown task %S" task))))
+
+(defun bic--interesting-status-items (c)
+  (concat "MESSAGES UIDNEXT UNSEEN UIDVALIDITY"
+	  (when (bic-connection--has-capability "CONDSTORE" c)
+	    " HIGHESTMODSEQ")))
 
 (defun bic--idle (fsm state-data)
   (let* ((idle-gensym (cl-gensym "IDLE-"))
