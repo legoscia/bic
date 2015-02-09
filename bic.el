@@ -498,6 +498,20 @@ ACCOUNT is a string of the form \"username@server\"."
 		   #'ignore
 		   '((0 "ID" ignore))))
 
+    (when (bic-connection--has-capability "NOTIFY" c)
+      (bic-command
+       c
+       (concat
+	"NOTIFY SET (selected-delayed (MessageNew MessageExpunge FlagChange))"
+	" (subscribed (MessageNew MessageExpunge FlagChange))"
+	" (personal (MailboxName SubscriptionChange))")
+       (lambda (notify-response)
+	 (pcase notify-response
+	   (`(,(or :no :bad) ,response ,_response-lines)
+	    (warn "Cannot enable NOTIFY for %s: %s"
+		  (plist-get state-data :address)
+		  (plist-get response :text)))))))
+
     ;; Get list of mailboxes
     (bic-command c
 		 (cond
