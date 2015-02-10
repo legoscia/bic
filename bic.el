@@ -2179,9 +2179,12 @@ user expects."
 	     (widget-convert 'item mailbox-name)
 	   (widget-convert
 	    'link
-	    :notify (lambda (&rest _ignore)
-		      (bic-mailbox-open account-name (car mailbox-data)))
 	    :tag "42"
+	    :account-name account-name
+	    :mailbox-name (car mailbox-data)
+	    :notify (lambda (widget &rest _ignore)
+		      (bic-mailbox-open (widget-get widget :account-name)
+					(widget-get widget :mailbox-name)))
 	    :format (concat
 		     "%[%v%] (%t)"
 		     (cond
