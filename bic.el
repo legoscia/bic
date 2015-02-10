@@ -1784,7 +1784,7 @@ file and return t."
       (cond
        ((cl-member-if-not uid-overview (gnus-uncompress-range not-these-unseen))
 	(unless (plist-get mailbox-entry :not-all-unread)
-	  (warn "%s (%s) has too many new/flagged messages!  Limiting to the latest %d"
+	  (message "%s (%s) has too many new/flagged messages!  Limiting to the latest %d"
 		mailbox (plist-get state-data :address) limit)
 	  ;; TODO: set a permanent flag
 	  (bic--update-mailbox-status
@@ -1794,7 +1794,7 @@ file and return t."
        ((cl-member-if-not uid-overview (gnus-uncompress-range not-these-recent))
 	(unless (plist-get mailbox-entry :not-all-recent)
 	  ;; TODO: improve wording
-	  (warn "%s (%s) has too many recent messages!  Limiting to the latest %d"
+	  (message "%s (%s) has too many recent messages!  Limiting to the latest %d"
 		mailbox (plist-get state-data :address) limit)
 	  ;; TODO: set a permanent flag
 	  (bic--update-mailbox-status
