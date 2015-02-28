@@ -4,6 +4,8 @@
 
 ;; Author: Magnus Henoch <magnus.henoch@gmail.com>
 ;; Keywords: mail
+;; Package-Version: 0.0.1
+;; Package-Requires: ((emacs "25"))
 
 ;; This program is free software; you can redistribute it and/or modify
 ;; it under the terms of the GNU General Public License as published by
@@ -80,6 +82,7 @@ from `bic-account-mailbox-table'.")
 (defvar bic-reconnect-interval 5
   "Attempt to reconnect after this many seconds.")
 
+;;;###autoload
 (defun bic (&optional new-account)
   "Start BIC.
 If there are no configured accounts, or if a prefix argument is
@@ -93,6 +96,7 @@ Otherwise, start BIC for all known addresses."
 	    (cl-remove-if #'bic--find-account accounts))
       (bic-mailbox-tree))))
 
+;;;###autoload
 (defun bic-add-account (address)
   (interactive "sEmail address: ")
   (if (bic--find-account address)

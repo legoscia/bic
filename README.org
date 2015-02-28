@@ -37,7 +37,8 @@ support non-blocking connections on Windows.
 
 ** How to use
 
-Byte-compile and load =bic-core.el= and =bic.el=, in that order.
+Type =M-x package-install-file=, and enter the _directory_ where
+bic.el etc are found.
 
 Then type =M-x bic=.  If it's the first time you use BIC, it will ask
 for your email address and IMAP server.  Otherwise, it will just start
