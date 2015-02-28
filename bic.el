@@ -992,6 +992,18 @@ It also includes underscore, which is used as an escape character.")
 	(`("HIGHESTMODSEQ" ,highest-modseq . ,_)
 	 (setf (cdr mailbox-entry)
 	       (plist-put (cdr mailbox-entry) :server-modseq highest-modseq))))
+      ;; Only remember unseen count for mailboxes being synced,
+      ;; since for the others we don't make any effort to keep
+      ;; it up to date.
+      (when (bic--infer-sync-level mailbox-entry)
+	(pcase (member "UNSEEN" status-att-list)
+	  (`("UNSEEN" ,unseen . ,_)
+	   (setf (cdr mailbox-entry)
+		 (plist-put (cdr mailbox-entry) :unseen (string-to-number unseen)))
+	   (bic--update-mailbox-status (plist-get state-data :address)
+				       (car mailbox-entry) (cdr mailbox-entry)))))
+      ;; TODO: check MESSAGES, UIDNEXT etc for empty mailboxes: no need
+      ;; to sync them.
       (when queue-sync-tasks
 	(pcase (bic--mailbox-sync-task state-data mailbox-entry)
 	  (`(,task)
@@ -1649,6 +1661,33 @@ file and return t."
 	  (subscribe-error
 	   (warn "Error in response to SUBSCRIBE: %S" subscribe-error)))
 	(fsm-send fsm (list :task-finished task)))))
+    (`(:any-mailbox :list-status-all)
+     (let ((c (plist-get state-data :connection)))
+       (if (and (bic-connection--has-capability "LIST-EXTENDED" c)
+		(bic-connection--has-capability "LIST-STATUS" c))
+	   (bic-command
+	    c
+	    (concat "LIST (SUBSCRIBED) \"\" \"*\" RETURN (STATUS ("
+		    (bic--interesting-status-items c)
+		    "))")
+	    (lambda (response)
+	      (fsm-send fsm (list :task-finished task)))
+	    '((0 "LIST" ignore)))
+	 ;; LIST-STATUS not supported.  Send STATUS requests for each mailbox.
+	 (let* ((interesting-mailboxes
+		 (cl-remove-if-not #'bic--infer-sync-level (plist-get state-data :mailboxes)))
+		(remaining (length interesting-mailboxes)))
+	   (dolist (mailbox-data interesting-mailboxes)
+	     (when (bic--infer-sync-level mailbox-data)
+	       (bic-command
+		c
+		(concat "STATUS " (bic-quote-string (car mailbox-data))
+			" ("
+			(bic--interesting-status-items c)
+			")")
+		(lambda (_response)
+		  (when (zerop (decf remaining))
+		    (fsm-send fsm (list :task-finished task)))))))))))
     (`(,_ :logout)
      ;; No need for a callback - this is the last task.
      (bic-command (plist-get state-data :connection) "LOGOUT" #'ignore))
@@ -1969,6 +2008,7 @@ file and return t."
 
 (defun bic--write-pending-flags (mailbox full-uid flags-to-add flags-to-remove state-data)
   (pcase-let ((`(,uidvalidity ,_uid) (split-string full-uid "-"))
+	      ;; XXX: get mailbox data here
 	      (stored-uid-validity
 	       (plist-get (cdr (assoc mailbox (plist-get state-data :mailboxes)))
 			  :uidvalidity)))
@@ -1984,6 +2024,7 @@ file and return t."
 	     (pending-flags-file (expand-file-name
 				  "pending-flags"
 				  (bic--mailbox-dir state-data mailbox))))
+	;; XXX: check for \Seen in need-to-add and need-to-remove, and adjust counter
 	(when (or need-to-add need-to-remove)
 	  (with-temp-buffer
 	    (dolist (flag need-to-add)
@@ -2020,6 +2061,16 @@ file and return t."
     (insert string)
     (write-region (point-min) (point-max) file nil :silent)))
 
+(defun bic-list-status (account)
+  (interactive (list (bic--read-running-account)))
+  (when (stringp account)
+    (setq account (bic--find-account account)))
+  (fsm-send account '(:queue-task (:any-mailbox :list-status-all))))
+
+(defun bic-list-status-all ()
+  (interactive)
+  (mapc #'bic-list-status bic-running-accounts))
+
 ;;; Mailbox tree
 
 (defface bic-mailbox-tree-account-connected
@@ -2037,13 +2088,23 @@ file and return t."
   "Face used for deactivated accounts in mailbox tree."
   :group 'bic)
 
-(defface bic-mailbox-tree-mailbox-unlimited-sync
+(defface bic-mailbox-tree-mailbox-unlimited-sync-unread
   '((t (:inherit gnus-group-mail-1)))
+  "Face used for fully synced mailboxes with unread messages in mailbox tree."
+  :group 'bic)
+
+(defface bic-mailbox-tree-mailbox-unlimited-sync
+  '((t (:inherit gnus-group-mail-1-empty)))
   "Face used for fully synced mailboxes in mailbox tree."
   :group 'bic)
 
-(defface bic-mailbox-tree-mailbox-partial-sync
+(defface bic-mailbox-tree-mailbox-partial-sync-unread
   '((t (:inherit gnus-group-mail-low)))
+  "Face used for partially synced mailboxes in mailbox tree."
+  :group 'bic)
+
+(defface bic-mailbox-tree-mailbox-partial-sync
+  '((t (:inherit gnus-group-mail-low-empty)))
   "Face used for partially synced mailboxes in mailbox tree."
   :group 'bic)
 
@@ -2175,7 +2236,9 @@ user expects."
     (mapcar
      (lambda (mailbox-data)
        (let ((mailbox-name (car mailbox-data))
-	     (attributes (plist-get (cdr mailbox-data) :attributes)))
+	     (attributes (plist-get (cdr mailbox-data) :attributes))
+	     (sync-level (bic--infer-sync-level mailbox-data))
+	     (unseen (plist-get (cdr mailbox-data) :unseen)))
 	 ;; It's unclear whether these attributes are case sensitive
 	 ;; or not, so let's use cl-equalp.
 	 (if (or (cl-member "\\Noselect" attributes :test #'cl-equalp)
@@ -2183,14 +2246,15 @@ user expects."
 	     (widget-convert 'item mailbox-name)
 	   (widget-convert
 	    'link
-	    :tag "42"
 	    :account-name account-name
 	    :mailbox-name (car mailbox-data)
 	    :notify (lambda (widget &rest _ignore)
 		      (bic-mailbox-open (widget-get widget :account-name)
 					(widget-get widget :mailbox-name)))
+	    :tag (if unseen (bic-number-to-string unseen) "?")
 	    :format (concat
-		     "%[%v%] (%t)"
+		     "%[%v%]"
+		     (when sync-level " (%t)")
 		     (cond
 		      ((plist-get (cdr mailbox-data) :not-all-unread)
 		       (propertize " [not all unread fetched]"
@@ -2199,12 +2263,16 @@ user expects."
 		       (propertize " [not all recent fetched]"
 				   'face 'warning)))
 		     "\n")
-	    :button-face (cl-ecase (bic--infer-sync-level mailbox-data)
-			   (:unlimited-sync
+	    :button-face (pcase (cons sync-level (and (numberp unseen) (not (zerop unseen))))
+			   (`(:unlimited-sync . t)
+			    'bic-mailbox-tree-mailbox-unlimited-sync-unread)
+			   (`(:unlimited-sync . nil)
 			    'bic-mailbox-tree-mailbox-unlimited-sync)
-			   (:partial-sync
+			   (`(:partial-sync . t)
+			    'bic-mailbox-tree-mailbox-partial-sync-unread)
+			   (`(:partial-sync . nil)
 			    'bic-mailbox-tree-mailbox-partial-sync)
-			   ((nil)
+			   (_
 			    'bic-mailbox-tree-mailbox-unsubscribed))
 	    mailbox-name))))
      mailboxes)))
