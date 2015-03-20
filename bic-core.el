@@ -938,6 +938,7 @@ VALUE must be greater than any marker previously issued."
   (while line
     (cond
      ((consp (car line))
+      ;; A literal, represented as a pair of markers.
       (push (pop line) tokens))
      ((or (null i) (>= i (length (car line))))
       (pop line)
