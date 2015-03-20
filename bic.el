@@ -2749,6 +2749,7 @@ If at the end of the message, show next unread message."
     (define-key map "W" 'gnus-summary-wash-map)
     (define-key map "n" 'bic-mailbox-next-unread)
     (define-key map " " 'bic-mailbox-next-page-or-next-unread)
+    (define-key map "g" 'bic-message-reload)
     map))
 
 (define-derived-mode bic-message-mode gnus-article-mode "BIC Message"
@@ -2772,7 +2773,7 @@ All key bindings:
 
 \\{bic-message-mode-map}")
 
-(defun bic-message-display (account mailbox msg)
+(cl-defun bic-message-display (account mailbox msg &key raw)
   (with-current-buffer (get-buffer-create "*BIC-Message*")
     (let ((inhibit-read-only t))
       (bic-message-mode)
@@ -2806,12 +2807,25 @@ All key bindings:
       (insert-file-contents-literally
        (expand-file-name msg bic--dir) nil nil nil t)
       (decode-coding-region (point-min) (point-max) 'raw-text-dos)
-      ;; Gnus already does a fine job displaying messages, so we might
-      ;; as well piggy-back on that:
-      (run-hooks 'gnus-article-decode-hook)
-      (gnus-article-prepare-display))
+      (unless raw
+	;; Gnus already does a fine job displaying messages, so we might
+	;; as well piggy-back on that:
+	(run-hooks 'gnus-article-decode-hook)
+	(gnus-article-prepare-display)))
     (let ((window (display-buffer (current-buffer))))
       (set-window-start window (point-min)))))
+
+(defun bic-message-reload (&optional raw)
+  "Redisplay the current message.
+With prefix argument, display the raw data of the message."
+  (interactive "P")
+  (unless (derived-mode-p 'bic-message-mode)
+    (user-error "Not in message buffer"))
+  (bic-message-display
+   bic--current-account
+   bic--current-mailbox
+   bic-message--full-uid
+   :raw (if raw t nil)))
 
 (defun bic-message-toggle-header (&optional arg)
   "Show the headers if they are hidden, or hide them if they are shown.
