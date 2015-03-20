@@ -663,9 +663,7 @@ ACCOUNT is a string of the form \"username@server\"."
 		;; TODO: rewrite flag file at suitable times
 		(with-temp-buffer
 		  (insert full-uid " ")
-		  (let ((print-escape-newlines t))
-		    (prin1 (bic-expand-literals new-flags)
-			   (current-buffer)))
+		  (bic--print-sexp (bic-expand-literals new-flags))
 		  (insert "\n")
 		  (write-region (point-min) (point-max)
 				flags-file :append :silent))))
@@ -689,8 +687,7 @@ ACCOUNT is a string of the form \"username@server\"."
 		   (insert full-uid " ")
 		   ;; TODO: better format?
 		   ;; XXX: escape CR?
-		   (let ((print-escape-newlines t))
-		     (prin1 envelope-data (current-buffer)))
+		   (bic--print-sexp envelope-data)
 		   (insert "\n")
 		   (write-region (point-min) (point-max)
 				 overview-file :append :silent))
@@ -2054,6 +2051,15 @@ file and return t."
 		   "Jul" "Aug" "Sep" "Oct" "Nov" "Dec"]
 		  (1- month))
 	    year)))
+
+(defun bic--print-sexp (sexp)
+  "Print SEXP in current buffer.
+Like `prin1', but escape newlines, and bind variables to avoid surprises."
+  (let ((print-escape-newlines t)
+	(print-level nil)
+	(print-length nil)
+	(print-circle nil))
+    (prin1 sexp (current-buffer))))
 
 (defun bic--write-string-to-file (string file)
   "Write STRING to FILE, overwriting any previous contents."
