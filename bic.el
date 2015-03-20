@@ -1746,7 +1746,18 @@ file and return t."
 		      10 nil
 		      (lambda ()
 			(fsm-send fsm (list :idle-done-timeout idle-gensym)))))))
-  (bic--send (plist-get state-data :connection) "DONE\r\n"))
+  (condition-case e
+      (bic--send (plist-get state-data :connection) "DONE\r\n")
+    (error
+     (cond
+      ((and (stringp (cdr e))
+	    (string-match-p "no longer connected to pipe" (cdr e)))
+       ;; The connection died.  That's an expected error.  The
+       ;; sentinel should fire and take care of it.
+       nil)
+      (t
+       ;; Different error.  Rethrow it.
+       (signal (car e) (cdr e)))))))
 
 (defun bic--numeric-string-lessp (s1 s2)
   (cond ((< (length s1) (length s2)) t)
