@@ -33,6 +33,9 @@
 
 (defvar bic-transcript-buffer "*bic-transcript-%s*")
 
+(defvar bic-redact-transcript t
+  "Hide addresses, subject lines and message ids in transcript.")
+
 (defvar bic-ignore-tls-errors nil
   "If non-nil, ignore certificate verification errors.")
 
@@ -767,7 +770,9 @@ Keep calling this function until it returns nil."
 	 (concat "S: "
 		 (if (and sensitive (funcall sensitive received-line))
 		     "<omitted>"
-		   received-line)
+		   (if bic-redact-transcript
+		       (bic--maybe-redact-received received-line bic--line-acc)
+		     received-line))
 		 "\n"))
 	;; Does a literal start on this line?
 	(if (string-match "{\\([0-9]+\\)}$" received-line)
@@ -866,6 +871,126 @@ VALUE must be greater than any marker previously issued."
 	   "\n"))
 
   (send-string (plist-get (fsm-get-state-data fsm) :proc) string))
+
+(defun bic--string-equals-at (needle haystack position)
+  "Return non-nil if NEEDLE can be found in HAYSTACK at POSITION."
+  (let ((needle-length (length needle)))
+    (and (<= (+ position needle-length) (length haystack))
+	 (let (mismatch (i 0))
+	   (while (and (not mismatch) (< i needle-length))
+	     (if (eq (elt needle i) (elt haystack (+ position i)))
+		 (incf i)
+	       (setq mismatch t)))
+	   (not mismatch)))))
+
+(defun bic--maybe-redact-received (received-line line-acc)
+  "Hide personal data such as addresses, subjects in transcript."
+  (let ((line-so-far (reverse (cons received-line line-acc)))
+	redact-at)
+    (cond
+     ((and (stringp (car line-so-far))
+	   (string-match "^\\* [^ ]+ FETCH (" (car line-so-far)))
+      ;; Now, dig down to ENVELOPE.
+      (cl-loop
+       with i = (match-end 0)
+       with parenthesis-depth = 0
+       with envelope-parts = nil
+       while line-so-far
+       if (consp (car line-so-far))
+       ;; A pair of markers.  Not what we're looking for.
+       do (pop line-so-far)
+       else if (>= i (length (car line-so-far)))
+       do (pop line-so-far)
+       (setq i 0)
+       else do
+       (pcase (elt (car line-so-far) i)
+	 (?\(
+	  ;; Opening parenthesis.  If we're inside the envelope, enter it.
+	  (if envelope-parts
+	      (progn
+		(incf i)
+		(incf parenthesis-depth))
+	    ;; Otherwise, try to skip over it.
+	    (condition-case _e
+		(setq i (nth 2 (bic--parse-line
+				(list (car line-so-far))
+				:line-start nil
+				:start-at (1+ i)
+				:closing-parenthesis ?\))))
+	      (error
+	       ;; (Presumably) the closing parenthesis is in the next
+	       ;; segment.
+	       (pop line-so-far)
+	       (setq i 0)
+	       (incf parenthesis-depth)))))
+	 (?\)
+	  ;; Closing parenthesis.
+	  (incf i)
+	  (setq parenthesis-depth (max 0 (1- parenthesis-depth)))
+	  (when (and (eq parenthesis-depth 1) (eq (car envelope-parts) 'address))
+	    ;; When dropping back to depth 1, we have finished one address.
+	    (pop envelope-parts)))
+	 (?\"
+	  ;; String.
+	  ;; There is no reason for this not to be terminated, but
+	  ;; let's not crash over that...
+	  (let ((start i))
+	    (condition-case _e
+		(setq i (nth 1 (bic--parse-quoted-string (car line-so-far) i)))
+	      (error
+	       ;; Just drop the segment in that case.
+	       (pop line-so-far)
+	       (setq i 0)))
+	    (unless (zerop i)
+	      ;; Now check if this is something we want to hide.
+	      (let ((envelope-part (car envelope-parts)))
+		(when (and envelope-part (eq (car line-so-far) received-line))
+		  (push (cons (1+ start) (1- i)) redact-at))
+		;; If this string is part of an address, don't drop
+		;; from envelope-parts yet.
+		(unless (eq envelope-part 'address)
+		  (pop envelope-parts))))))
+	 (?\s
+	  ;; Space.  Just move forward.
+	  (incf i))
+	 (_
+	  ;; Looks like an atom.  Is it ENVELOPE, perhaps?
+	  (cond
+	   ((bic--string-equals-at "ENVELOPE (" (car line-so-far) i)
+	    (setq envelope-parts '(nil text
+				       address address address
+				       address address address
+				       message-id message-id)))
+	   ;; Or is it NIL inside an envelope?  If so, it's one thing
+	   ;; we don't have to redact.
+	   ((and (eq parenthesis-depth 1)
+		 (bic--string-equals-at "NIL" (car line-so-far) i))
+	    (pop envelope-parts)))
+	  ;; Skip over the atom
+	  (pcase (cl-position ?\s (car line-so-far) :start i)
+	    (`nil
+	     (pop line-so-far)
+	     (setq i 0))
+	    (new-i
+	     (setq i new-i))))))
+      (if (null redact-at)
+	  received-line
+	(with-temp-buffer
+	  (insert received-line)
+	  (goto-char (point-min))
+	  (dolist (from-to redact-at)
+	    ;; String offsets are 0-based, but buffer offsets are 1-based.
+	    (let* ((from (1+ (car from-to)))
+		   (to (1+ (cdr from-to)))
+		   (text (buffer-substring from to)))
+	      (setf (buffer-substring from to)
+		    (propertize "redacted"
+				'face 'shadow
+				'display text
+				'yank-handler '(nil "<redacted>")))))
+	  (buffer-string))))
+     (t
+      received-line))))
 
 ;; Defined in view.el
 (defvar view-no-disable-on-exit)
