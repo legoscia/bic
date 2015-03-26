@@ -89,7 +89,9 @@ look for more information:
 
 - The =*bic-transcript-username@example.com*= buffer contains a
   transcript of IMAP requests and responses exchanged with the
-  server.
+  server.  When copying text from the transcript buffer to another
+  buffer, BIC makes an effort to remove information you might not
+  want to share, such as email addresses and subject lines.
 - The =*Warnings*= buffer contains warnings about unexpected events.
 - The =*fsm-debug*= buffer shows messages and state transitions for
   the state machines.  This is usually uninteresting, except for the
