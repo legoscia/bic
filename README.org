@@ -32,8 +32,10 @@ easiest way to satisfy this is to install the =jabber= package from
 [[http://melpa.milkbox.net/][MELPA]].  Strictly speaking, it only requires =fsm.el= and =srv.el=,
 which should probably be turned into independent libraries.
 
-BIC probably doesn't work very well on Windows, because Emacs doesn't
-support non-blocking connections on Windows.
+If you're using Emacs on Windows, make sure that your Emacs contains
+commit d133cf8 (2015-03-27).  This commit added support for
+non-blocking connections on Windows.  BIC has not been tested on
+Windows, so any reports, positive or negative, are very welcome.
 
 ** How to use
 
