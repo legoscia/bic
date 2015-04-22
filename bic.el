@@ -623,8 +623,26 @@ ACCOUNT is a string of the form \"username@server\"."
 	    (nconc expunge-task (list seq-no))
 	    (bic--queue-task-if-new state-data expunge-task)
 	    (bic--maybe-next-task fsm state-data)
-	    ;; TODO: decremend "EXISTS" value for current mailbox
+	    ;; TODO: decrement "EXISTS" value for current mailbox
 	    (list :connected state-data nil)))
+	 (`(,_ "RECENT")
+	  ;; We don't really care about the \Recent flag.  Assuming
+	  ;; that the server always sends EXISTS along with RECENT,
+	  ;; we can ignore this.
+	  (list :connected state-data nil))
+	 (`(,how-many "EXISTS")
+	  (plist-put (cdr (assoc selected (plist-get state-data :mailboxes)))
+		     :exists (string-to-number how-many))
+	  ;; TODO: just fetch new messages, as we know their
+	  ;; sequence numbers.
+	  (fsm-send
+	   fsm
+	   `(:queue-task
+	     (,selected :sync-mailbox
+		       ,@(unless (eq :unlimited-sync
+				     (bic--mailbox-sync-level state-data selected))
+			   '(:limit 100)))))
+	  (list :connected state-data nil))
 	 (_
 	  (warn "Unexpected untagged response %S" untagged-response)
 	  nil))))
@@ -1709,8 +1727,7 @@ file and return t."
 	 (timer (run-with-timer (* 29 60) nil
 				(lambda ()
 				  (fsm-send fsm (list :idle-timeout idle-gensym)))))
-	 (mailbox (plist-get state-data :selected))
-	 (mailbox-plist (cdr (assoc mailbox (plist-get state-data :mailboxes)))))
+	 (mailbox (plist-get state-data :selected)))
     (plist-put state-data :current-task (list :idle idle-gensym timer))
     (bic-command
      (plist-get state-data :connection)
@@ -1727,23 +1744,6 @@ file and return t."
 		 (plist-get (cdr ok-response) :code)
 		 (plist-get (cdr ok-response) :data)
 		 (plist-get (cdr ok-response) :text)))))
-      (list
-       1 "EXISTS"
-       (lambda (exists-response)
-	 (plist-put mailbox-plist :exists (string-to-number (cl-first exists-response)))
-	 ;; TODO: just fetch new messages, as we know their
-	 ;; sequence numbers.
-	 (fsm-send
-	  fsm
-	  `(:queue-task
-	    (,mailbox :sync-mailbox
-		      ,@(unless (eq :unlimited-sync
-				    (bic--mailbox-sync-level state-data mailbox))
-			  '(:limit 100)))))))
-      ;; We don't really care about the \Recent flag.  Assuming
-      ;; that the server always sends EXISTS along with RECENT,
-      ;; we can ignore this.
-      (list 1 "RECENT" #'ignore)
       (list 0 "FLAGS" #'ignore)))))
 
 (defun bic--idle-done (fsm state-data)
