@@ -741,11 +741,7 @@ ACCOUNT is a string of the form \"username@server\"."
      (list :connected state-data))
     (`(:flags ,mailbox ,full-uid ,flags-to-add ,flags-to-remove)
      (bic--write-pending-flags mailbox full-uid flags-to-add flags-to-remove state-data)
-     (let ((tasks (plist-get state-data :tasks))
-	   (new-task (list mailbox :pending-flags)))
-       (unless (member new-task tasks)
-	 (plist-put state-data
-		    :tasks (append tasks (list new-task)))))
+     (bic--queue-task-if-new state-data (list mailbox :pending-flags))
      (bic--maybe-next-task fsm state-data)
      (list :connected state-data))
     (`(:sync-level ,mailbox ,new-sync-level)
