@@ -908,6 +908,8 @@ It also includes underscore, which is used as an escape character.")
 	 ;; asked for mailbox subscription information.
 	 (subscription-return
 	  (bic-connection--has-capability "LIST-EXTENDED" (plist-get state-data :connection)))
+	 (status-return
+	  (bic-connection--has-capability "LIST-STATUS" (plist-get state-data :connection)))
 	 mailboxes status-responses)
     ;; XXX: do we really always overwrite mailbox information?
     ;; Need to reverse responses, so we get LIST before STATUS.
@@ -966,7 +968,10 @@ It also includes underscore, which is used as an escape character.")
     (bic--store-initial-mailbox-list (plist-get state-data :address) mailboxes)
     (if subscription-return
 	;; If we have subscription info, we can sync mailboxes.
-	(bic--queue-task-if-new state-data (list :any-mailbox :sync-mailboxes))
+	(if status-return
+	    (bic--queue-task-if-new state-data (list :any-mailbox :sync-mailboxes))
+	  ;; But if we didn't get STATUS here, let's get that first.
+	  (bic--queue-task-if-new state-data (list :any-mailbox :list-status-all)))
       ;; If we didn't get the subscription info already, ask for it with LSUB.
       (bic-command
        (plist-get state-data :connection)
@@ -1041,7 +1046,10 @@ It also includes underscore, which is used as an escape character.")
 				       (car mailbox-entry) (cdr mailbox-entry)))))
      mailboxes)
     ;; Now we can finally sync the mailboxes.
-    (bic--queue-task-if-new state-data (list :any-mailbox :sync-mailboxes))))
+    (if (bic-connection--has-capability "LIST-STATUS" (plist-get state-data :connection))
+	(bic--queue-task-if-new state-data (list :any-mailbox :sync-mailboxes))
+      ;; But get STATUS first, if we couldn't before.
+      (bic--queue-task-if-new state-data (list :any-mailbox :list-status-all)))))
 
 (defun bic--sync-mailboxes (fsm state-data task)
   ;; TODO: do we need to issue a new LIST-STATUS request here?
