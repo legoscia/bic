@@ -407,7 +407,7 @@ ACCOUNT is a string of the form \"username@server\"."
     (list state-data 60)))
 
 (define-state bic-account :existing
-  (fsm state-data event callback)
+  (_fsm state-data event callback)
   (let ((our-connection (plist-get state-data :connection)))
     (pcase event
       (`((:disconnected ,keyword ,reason) ,(pred (eq our-connection)))
@@ -589,8 +589,7 @@ ACCOUNT is a string of the form \"username@server\"."
 	;; Check if we were trying to select this mailbox for the
 	;; current task.
 	(pcase (plist-get state-data :current-task)
-	  ((and `(,(pred (string= mailbox-name)) . ,_)
-		current-task)
+	  (`(,(pred (string= mailbox-name)) . ,_)
 	   (plist-put state-data :current-task nil)
 	   (bic--maybe-next-task fsm state-data)))
 	(list :connected state-data nil))))
@@ -1694,6 +1693,8 @@ file and return t."
 		    (bic--interesting-status-items c)
 		    "))")
 	    (lambda (response)
+	      (unless (eq (car response) :ok)
+		(warn "LIST request failed: %S" response))
 	      (fsm-send fsm (list :task-finished task)))
 	    '((0 "LIST" ignore)))
 	 ;; LIST-STATUS not supported.  Send STATUS requests for each mailbox.
@@ -1726,18 +1727,17 @@ file and return t."
   (let* ((idle-gensym (cl-gensym "IDLE-"))
 	 (timer (run-with-timer (* 29 60) nil
 				(lambda ()
-				  (fsm-send fsm (list :idle-timeout idle-gensym)))))
-	 (mailbox (plist-get state-data :selected)))
+				  (fsm-send fsm (list :idle-timeout idle-gensym))))))
     (plist-put state-data :current-task (list :idle idle-gensym timer))
     (bic-command
      (plist-get state-data :connection)
      "IDLE"
      (lambda (idle-response)
        (fsm-send fsm (list :idle-response idle-response idle-gensym)))
-     ;; TODO: more specific response handlers here
      (list
       (list
        0 :ok
+       ;; A periodic "OK" response from the server.  (Dovecot does this.)
        (lambda (ok-response)
 	 (when (plist-get (cdr ok-response) :code)
 	   (warn "Unknown response while IDLE: %S %S %S"
