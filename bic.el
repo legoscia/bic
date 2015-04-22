@@ -1474,9 +1474,16 @@ file and return t."
 	    (our-modseq (plist-get mailbox-plist :our-modseq))
 	    (server-modseq (plist-get mailbox-plist :server-modseq))
 	    (highest-modseq our-modseq)
-	    (prefix (concat uidvalidity "-"))
 	    (overview-table (bic--read-overview state-data mailbox))
-	    uids)
+	    (uid-tree (gethash mailbox (plist-get state-data :uid-tree-per-mailbox)))
+	    (numeric-uids (avl-tree-flatten uid-tree)))
+
+       ;; TODO: check for deleted messages.  Ideally support QRESYNC.
+       ;; If the server does _not_ support CONDSTORE, mix in with flag
+       ;; requests.  (Or is that a bad idea?)
+       ;; If the server supports ESEARCH, use that.
+       ;; Perhaps do something clever with EXISTS - which _may_ be
+       ;; outdated at this point.
 
        ;; We can skip requesting flags for already downloaded messages
        ;; if there aren't any downloaded messages, or if the server
@@ -1486,13 +1493,6 @@ file and return t."
 		      (null server-modseq)
 		      (null our-modseq)
 		      (bic--numeric-string-lessp our-modseq server-modseq)))
-	 ;; Find list of UIDs present in overview table.
-	 (maphash
-	  (lambda (full-uid _overview-data)
-	    (when (string-prefix-p prefix full-uid)
-	      (let ((uid (substring full-uid (1+ (cl-position ?- full-uid)))))
-		(push uid uids))))
-	  overview-table)
 	 ;; XXX: if the mailbox has many messages, and the server
 	 ;; doesn't support CONDSTORE, this will take really long
 	 ;; time, as we unconditionally get the flag status of every
@@ -1500,7 +1500,7 @@ file and return t."
 	 (bic-uids-command
 	  connection
 	  "UID FETCH "
-	  (gnus-compress-sequence (sort (mapcar 'string-to-number uids) '<) t)
+	  (gnus-compress-sequence numeric-uids t)
 	  (cond
 	   ((bic-connection--has-capability "CONDSTORE" connection)
 	    (if our-modseq
