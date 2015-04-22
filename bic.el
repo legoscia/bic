@@ -1460,121 +1460,7 @@ file and return t."
     (`(,mailbox :sync-mailbox . ,_options)
      ;; At this point, we should have selected the mailbox already.
      (cl-assert (string= mailbox (plist-get state-data :selected)))
-     ;; TODO: do something clever with the limit, so we don't need to
-     ;; dig through too much data.
-     (let* ((connection (plist-get state-data :connection))
-	    unseen-flagged-search-data recent-search-data
-	    (mailbox-plist
-	     (cdr (assoc mailbox (plist-get state-data :mailboxes))))
-	    (uidvalidity (plist-get mailbox-plist :uidvalidity))
-	    (our-modseq (plist-get mailbox-plist :our-modseq))
-	    (server-modseq (plist-get mailbox-plist :server-modseq))
-	    (highest-modseq our-modseq)
-	    (overview-table (bic--read-overview state-data mailbox))
-	    (uid-tree (gethash mailbox (plist-get state-data :uid-tree-per-mailbox)))
-	    (numeric-uids (avl-tree-flatten uid-tree)))
-
-       ;; TODO: check for deleted messages.  Ideally support QRESYNC.
-       ;; If the server does _not_ support CONDSTORE, mix in with flag
-       ;; requests.  (Or is that a bad idea?)
-       ;; If the server supports ESEARCH, use that.
-       ;; Perhaps do something clever with EXISTS - which _may_ be
-       ;; outdated at this point.
-
-       ;; We can skip requesting flags for already downloaded messages
-       ;; if there aren't any downloaded messages, or if the server
-       ;; supports CONDSTORE, and the MODSEQ values match.
-       (when (and (not (zerop (hash-table-count overview-table)))
-		  (or (not (bic-connection--has-capability "CONDSTORE" connection))
-		      (null server-modseq)
-		      (null our-modseq)
-		      (bic--numeric-string-lessp our-modseq server-modseq)))
-	 ;; XXX: if the mailbox has many messages, and the server
-	 ;; doesn't support CONDSTORE, this will take really long
-	 ;; time, as we unconditionally get the flag status of every
-	 ;; message we know about.
-	 (bic-uids-command
-	  connection
-	  "UID FETCH "
-	  (gnus-compress-sequence numeric-uids t)
-	  (cond
-	   ((bic-connection--has-capability "CONDSTORE" connection)
-	    (if our-modseq
-		(concat " FLAGS (CHANGEDSINCE " our-modseq ")")
-	      " (FLAGS MODSEQ)"))
-	   (t
-	    " FLAGS"))
-	  (lambda (worst-response all-responses)
-	    (cl-ecase worst-response
-	      (:ok
-	       (let (extra-response-lines)
-		 (dolist (response all-responses)
-		   (setq extra-response-lines
-			 (append extra-response-lines (cl-third response)))
-		   (let ((resp (cl-second response)))
-		     ;; Check for HIGHESTMODSEQ response code.
-		     ;; If none, use highest MODSEQ seen in FETCH responses.
-		     (when (string= (plist-get resp :code) "HIGHESTMODSEQ")
-		       (setq highest-modseq (plist-get resp :data)))))
-		 (when extra-response-lines
-		   (message "Extra response lines for FETCH: %S" extra-response-lines))))
-	      ((:no :bad)
-	       (warn "FETCH request failed: %S"
-		     (cl-remove :ok all-responses :key #'car)))))
-	  (list
-	   (list 1 "FETCH"
-		 (lambda (one-fetch-response)
-		   ;; If the FETCH response contains a MODSEQ item,
-		   ;; remember the highest one.
-		   (pcase one-fetch-response
-		     (`(,_ "FETCH" ,msg-att)
-		      (pcase (member "MODSEQ" msg-att)
-			(`("MODSEQ" (,msg-modseq) . ,_)
-			 (when (or (null highest-modseq)
-				   (bic--numeric-string-lessp
-				    highest-modseq msg-modseq))
-			   (setq highest-modseq msg-modseq))))))
-		   (fsm-send fsm (list :early-fetch-response
-				       mailbox
-				       one-fetch-response
-				       uidvalidity)))))))
-       ;; Now search for messages that we need to download.
-       (bic-command
-	connection
-	(concat "UID SEARCH "
-		(when (and t (bic-connection--has-capability "ESEARCH" connection))
-		  "RETURN () ")
-		"OR UNSEEN FLAGGED")
-	(lambda (search-response)
-	  (pcase search-response
-	    (`(:ok ,_ ,search-data)
-	     (setq unseen-flagged-search-data search-data))
-	    (other
-	     (warn "SEARCH for unseen/flagged messages failed: %S" other))))
-	'((0 "SEARCH" :keep)
-	  (0 "ESEARCH" :keep)))
-       (bic-command
-	(plist-get state-data :connection)
-	(concat "UID SEARCH "
-		(when (and t (bic-connection--has-capability "ESEARCH" connection))
-		  "RETURN () ")
-		"SEEN UNFLAGGED SINCE "
-		(bic--date-text
-		 (time-subtract (current-time)
-				(days-to-time bic-backlog-days))))
-	(lambda (search-response)
-	  (pcase search-response
-	    (`(:ok ,_ ,search-data)
-	     (setq recent-search-data search-data))
-	    (other
-	     (warn "SEARCH for recent messages failed: %S" other)))
-	  ;; At this point, both requests should have finished.
-	  (bic--handle-search-response
-	   fsm state-data task
-	   unseen-flagged-search-data recent-search-data
-	   highest-modseq server-modseq))
-	'((0 "SEARCH" :keep)
-	  (0 "ESEARCH" :keep)))))
+     (bic--sync-mailbox fsm state-data task))
 
     (`(,mailbox :expunge-messages . ,sequence-numbers)
      (cl-assert (string= mailbox (plist-get state-data :selected)))
@@ -1768,6 +1654,124 @@ file and return t."
 	((> (length s1) (length s2)) nil)
 	((string= s1 s2) nil)
 	(t (string-lessp s1 s2))))
+
+(defun bic--sync-mailbox (fsm state-data task)
+  ;; TODO: do something clever with the limit, so we don't need to
+  ;; dig through too much data.
+  (let* ((mailbox (car task))
+	 (connection (plist-get state-data :connection))
+	 unseen-flagged-search-data recent-search-data
+	 (mailbox-plist
+	  (cdr (assoc mailbox (plist-get state-data :mailboxes))))
+	 (uidvalidity (plist-get mailbox-plist :uidvalidity))
+	 (our-modseq (plist-get mailbox-plist :our-modseq))
+	 (server-modseq (plist-get mailbox-plist :server-modseq))
+	 (highest-modseq our-modseq)
+	 (overview-table (bic--read-overview state-data mailbox))
+	 (uid-tree (gethash mailbox (plist-get state-data :uid-tree-per-mailbox)))
+	 (numeric-uids (avl-tree-flatten uid-tree)))
+
+    ;; TODO: check for deleted messages.  Ideally support QRESYNC.
+    ;; If the server does _not_ support CONDSTORE, mix in with flag
+    ;; requests.  (Or is that a bad idea?)
+    ;; If the server supports ESEARCH, use that.
+    ;; Perhaps do something clever with EXISTS - which _may_ be
+    ;; outdated at this point.
+
+    ;; We can skip requesting flags for already downloaded messages
+    ;; if there aren't any downloaded messages, or if the server
+    ;; supports CONDSTORE, and the MODSEQ values match.
+    (when (and (not (zerop (hash-table-count overview-table)))
+	       (or (not (bic-connection--has-capability "CONDSTORE" connection))
+		   (null server-modseq)
+		   (null our-modseq)
+		   (bic--numeric-string-lessp our-modseq server-modseq)))
+      ;; XXX: if the mailbox has many messages, and the server
+      ;; doesn't support CONDSTORE, this will take really long
+      ;; time, as we unconditionally get the flag status of every
+      ;; message we know about.
+      (bic-uids-command
+       connection
+       "UID FETCH "
+       (gnus-compress-sequence numeric-uids t)
+       (cond
+	((bic-connection--has-capability "CONDSTORE" connection)
+	 (if our-modseq
+	     (concat " FLAGS (CHANGEDSINCE " our-modseq ")")
+	   " (FLAGS MODSEQ)"))
+	(t
+	 " FLAGS"))
+       (lambda (worst-response all-responses)
+	 (cl-ecase worst-response
+	   (:ok
+	    (let (extra-response-lines)
+	      (dolist (response all-responses)
+		(setq extra-response-lines
+		      (append extra-response-lines (cl-third response)))
+		(let ((resp (cl-second response)))
+		  ;; Check for HIGHESTMODSEQ response code.
+		  ;; If none, use highest MODSEQ seen in FETCH responses.
+		  (when (string= (plist-get resp :code) "HIGHESTMODSEQ")
+		    (setq highest-modseq (plist-get resp :data)))))
+	      (when extra-response-lines
+		(message "Extra response lines for FETCH: %S" extra-response-lines))))
+	   ((:no :bad)
+	    (warn "FETCH request failed: %S"
+		  (cl-remove :ok all-responses :key #'car)))))
+       (list
+	(list 1 "FETCH"
+	      (lambda (one-fetch-response)
+		;; If the FETCH response contains a MODSEQ item,
+		;; remember the highest one.
+		(pcase one-fetch-response
+		  (`(,_ "FETCH" ,msg-att)
+		   (pcase (member "MODSEQ" msg-att)
+		     (`("MODSEQ" (,msg-modseq) . ,_)
+		      (when (or (null highest-modseq)
+				(bic--numeric-string-lessp
+				 highest-modseq msg-modseq))
+			(setq highest-modseq msg-modseq))))))
+		(fsm-send fsm (list :early-fetch-response
+				    mailbox
+				    one-fetch-response
+				    uidvalidity)))))))
+    ;; Now search for messages that we need to download.
+    (bic-command
+     connection
+     (concat "UID SEARCH "
+	     (when (and t (bic-connection--has-capability "ESEARCH" connection))
+	       "RETURN () ")
+	     "OR UNSEEN FLAGGED")
+     (lambda (search-response)
+       (pcase search-response
+	 (`(:ok ,_ ,search-data)
+	  (setq unseen-flagged-search-data search-data))
+	 (other
+	  (warn "SEARCH for unseen/flagged messages failed: %S" other))))
+     '((0 "SEARCH" :keep)
+       (0 "ESEARCH" :keep)))
+    (bic-command
+     (plist-get state-data :connection)
+     (concat "UID SEARCH "
+	     (when (and t (bic-connection--has-capability "ESEARCH" connection))
+	       "RETURN () ")
+	     "SEEN UNFLAGGED SINCE "
+	     (bic--date-text
+	      (time-subtract (current-time)
+			     (days-to-time bic-backlog-days))))
+     (lambda (search-response)
+       (pcase search-response
+	 (`(:ok ,_ ,search-data)
+	  (setq recent-search-data search-data))
+	 (other
+	  (warn "SEARCH for recent messages failed: %S" other)))
+       ;; At this point, both requests should have finished.
+       (bic--handle-search-response
+	fsm state-data task
+	unseen-flagged-search-data recent-search-data
+	highest-modseq server-modseq))
+     '((0 "SEARCH" :keep)
+       (0 "ESEARCH" :keep)))))
 
 (defun bic--handle-search-response
     (fsm state-data task unseen-flagged-search-data recent-search-data
