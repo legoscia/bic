@@ -251,19 +251,21 @@ ACCOUNT is a string of the form \"username@server\"."
 	  (push (list response 993 :plaintls) candidates))))
 
     (plist-put state-data :candidates candidates)
-    (let* ((address (plist-get state-data :address))
-	   (user-part (substring address 0 (cl-position ?@ address))))
-      (pcase (widget-choose
-	      "IMAP username"
-	      (list (cons (concat "Authenticate as " address) address)
-		    (cons (concat "Authenticate as " user-part) user-part)
-		    (cons "Use a different username" nil)))
-	((and (pred stringp) username)
-	 (plist-put state-data :username username))
-	(`nil
-	 (plist-put state-data :username (read-string "Enter IMAP username: ")))))
+    (plist-put state-data :username (bic--ask-for-username address))
     (fsm-send fsm :try-connect)
     (list state-data nil)))
+
+(defun bic--ask-for-username (address)
+  (let ((user-part (substring address 0 (cl-position ?@ address))))
+    (pcase (widget-choose
+	    "IMAP username"
+	    (list (cons (concat "Authenticate as " address) address)
+		  (cons (concat "Authenticate as " user-part) user-part)
+		  (cons "Use a different username" :other)))
+      ((and (pred stringp) username)
+       username)
+      (`:other
+       (read-string "Enter IMAP username: ")))))
 
 (define-state bic-account :no-data
   (fsm state-data event _callback)
