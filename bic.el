@@ -2801,6 +2801,10 @@ All key bindings:
 \\{bic-message-mode-map}")
 
 (cl-defun bic-message-display (account mailbox msg &key raw)
+  "Display a message in the buffer *BIC-Message*.
+ACCOUNT and MAILBOX identify the mailbox that the message is in,
+and MSG is a string, containing the uidvalidity of the mailbox
+and the uid of the message, separated by a hyphen."
   (with-current-buffer (get-buffer-create "*BIC-Message*")
     (let ((inhibit-read-only t))
       (bic-message-mode)
