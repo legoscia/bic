@@ -1516,7 +1516,8 @@ file and return t."
 		    ;; check all messages in mailbox.
 		    (max-uid (if highest-expunged
 				 (avl-tree-last uid-tree)
-			       (car (last sorted)))))
+			       (car (last sorted))))
+		    expunged-full-uids)
 	       ;; TODO: It's a bit weird to use an index to loop over
 	       ;; a hashtable.  Ideally, we'd want to loop over part
 	       ;; of the AVL tree, but it seems there is no such
@@ -1527,23 +1528,9 @@ file and return t."
 		       ;; This UID is present in the search results,
 		       ;; thus this message still exists.
 		       (pop sorted)
-		     (let ((full-uid (concat mailbox-uidvalidity "-" (bic-number-to-string uid))))
-		       (when (gethash full-uid overview-table)
-			 ;; This UID is not present in the search
-			 ;; results, but present in our hashtable.
-			 ;; Thus it is a message that we know about,
-			 ;; that has been expunged.
-			 (with-temp-buffer
-			   (insert full-uid " :expunged\n")
-			   (write-region (point-min) (point-max)
-					 overview-file :append :silent))
-			 (remhash full-uid overview-table)
-			 (avl-tree-delete uid-tree uid)
-			 (bic-mailbox--maybe-remove-message
-			  (plist-get state-data :address)
-			  mailbox full-uid)
-			 ;; TODO: remove file on disk once this works properly
-			 ))))))
+		     (push (concat mailbox-uidvalidity "-" (bic-number-to-string uid))
+			   expunged-full-uids)))
+	       (bic--messages-expunged state-data mailbox expunged-full-uids)))
 	    (search-error
 	     (warn "Error in response to SEARCH: %S" search-error)))
 	  (fsm-send fsm (list :task-finished task)))
@@ -2062,6 +2049,30 @@ file and return t."
 	(bic-mailbox--maybe-update-message
 	 (plist-get state-data :address)
 	 mailbox full-uid)))))
+
+(defun bic--messages-expunged (state-data mailbox expunged-full-uids)
+  (let* ((overview-table (bic--read-overview state-data mailbox))
+	 (uid-tree (gethash mailbox (plist-get state-data :uid-tree-per-mailbox)))
+	 (dir (bic--mailbox-dir state-data mailbox))
+	 (overview-file (expand-file-name "overview" dir)))
+    (dolist (full-uid expunged-full-uids)
+      (when (gethash full-uid overview-table)
+	;; This UID is not present in the search
+	;; results, but present in our hashtable.
+	;; Thus it is a message that we know about,
+	;; that has been expunged.
+	(with-temp-buffer
+	  (insert full-uid " :expunged\n")
+	  (write-region (point-min) (point-max)
+			overview-file :append :silent))
+	(remhash full-uid overview-table)
+	(avl-tree-delete uid-tree
+			 (string-to-number (substring full-uid (1+ (cl-position ?- full-uid)))))
+	(bic-mailbox--maybe-remove-message
+	 (plist-get state-data :address)
+	 mailbox full-uid)
+	;; TODO: remove file on disk once this works properly
+	))))
 
 (defun bic--date-text (time)
   (pcase-let ((`(,_sec ,_min ,_hour ,day ,month ,year . ,_)
