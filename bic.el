@@ -1658,7 +1658,7 @@ file and return t."
 	 (highest-modseq our-modseq)
 	 (overview-table (bic--read-overview state-data mailbox))
 	 (uid-tree (gethash mailbox (plist-get state-data :uid-tree-per-mailbox)))
-	 (numeric-uids (avl-tree-flatten uid-tree)))
+	 numeric-uids)
 
     ;; TODO: check for deleted messages.  Ideally support QRESYNC.
     ;; If the server does _not_ support CONDSTORE, mix in with flag
@@ -1666,7 +1666,74 @@ file and return t."
     ;; If the server supports ESEARCH, use that.
     ;; Perhaps do something clever with EXISTS - which _may_ be
     ;; outdated at this point.
+    (when (bic-connection--has-capability "ESEARCH" connection)
+      ;; ESEARCH permits a relatively cheap way to check for some
+      ;; deleted messages in the absence of QRESYNC - at least the
+      ;; ones at the beginning or end of the list of messages we know
+      ;; about.
+      (let ((min (avl-tree-first uid-tree))
+	    (max (avl-tree-last uid-tree)))
+	(when (and min max)
+	  (bic-command
+	   connection
+	   (format "UID SEARCH RETURN (MIN MAX) UID %s:%s"
+		   (bic-number-to-string min) (bic-number-to-string max))
+	   (lambda (search-response)
+	     (pcase search-response
+	       (`(:ok ,_ (("ESEARCH" ("TAG" ,_) "UID" . ,search-data)))
+		(let ((min-string (cadr (member "MIN" search-data)))
+		      (max-string (cadr (member "MAX" search-data))))
+		  (if (and (null min-string) (null max-string))
+		      ;; Special case: _all_ the messages we knew
+		      ;; about have been deleted.
+		      (bic--messages-expunged
+		       state-data mailbox
+		       (avl-tree-mapcar
+			(lambda (uid) (concat uidvalidity "-" (bic-number-to-string uid)))
+			uid-tree))
+		    ;; If there is at least one message, we should
+		    ;; have gotten non-nil MIN and MAX results as
+		    ;; well.
+		    (let ((actual-min (string-to-number min-string))
+			  (actual-max (string-to-number max-string))
+			  (expunged-count 0)
+			  expunged-full-uids)
+		      (when (> actual-min min)
+			;; The messages below actual-min have been
+			;; expunged on the server.  Loop through our
+			;; UIDs, exiting once we've hit actual-min.
+			(catch 'done
+			  (avl-tree-mapc
+			   (lambda (uid)
+			     (if (>= uid actual-min)
+				 (throw 'done t)
+			       (push (concat uidvalidity "-" (bic-number-to-string uid))
+				     expunged-full-uids)
+			       (incf expunged-count)))
+			   uid-tree nil)))
+		      (when (< actual-max max)
+			;; The messages above actual-max have been
+			;; expunged on the server.  Loop through our
+			;; UIDs in reverse order, exiting once we've
+			;; hit actual-max.
+			(catch 'done
+			  (avl-tree-mapc
+			   (lambda (uid)
+			     (if (<= uid actual-max)
+				 (throw 'done t)
+			       (push (concat uidvalidity "-" (bic-number-to-string uid))
+				     expunged-full-uids)
+			       (incf expunged-count)))
+			   uid-tree t)))
+		      (bic--messages-expunged state-data mailbox expunged-full-uids)))))
+	       (`(:ok ,_ ,other-search-data)
+		(warn "Unexpected search result: %S" other-search-data))
+	       (other
+		(warn "Search failed: %S" other))))
 
+	   '((0 "ESEARCH" :keep))))))
+
+    (setq numeric-uids (avl-tree-flatten uid-tree))
     ;; We can skip requesting flags for already downloaded messages
     ;; if there aren't any downloaded messages, or if the server
     ;; supports CONDSTORE, and the MODSEQ values match.
