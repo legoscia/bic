@@ -89,7 +89,8 @@ If there are no configured accounts, or if a prefix argument is
 given (setting NEW-ACCOUNT to non-nil), prompt for email address.
 Otherwise, start BIC for all known addresses."
   (interactive "P")
-  (let ((accounts (directory-files bic-data-directory nil "@")))
+  (let ((accounts (and (file-directory-p bic-data-directory)
+		       (directory-files bic-data-directory nil "@"))))
     (if (or new-account (null accounts))
 	(call-interactively #'bic-add-account)
       (mapc #'bic-add-account
