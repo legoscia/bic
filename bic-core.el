@@ -391,7 +391,7 @@ omitting the leading \"*\"."
   (list state-data nil))
 
 (define-state bic-connection :sasl-auth
-  (fsm state-data event callback)
+  (fsm state-data event _callback)
   (pcase event
     (`(:filter ,process ,data)
      (bic--filter process data fsm :sensitive (apply-partially #'string-prefix-p "+ "))
@@ -450,8 +450,7 @@ omitting the leading \"*\"."
 	;; XXX: check local success/failure here too
 	(let ((new-capabilities
 	       (when (string= (plist-get plist :code) "CAPABILITY")
-		 (bic--parse-capabilities (split-string (plist-get plist :data)))))
-	      (text (plist-get plist :text)))
+		 (bic--parse-capabilities (split-string (plist-get plist :data))))))
 	  (plist-put state-data :authenticated t)
 	  (plist-put state-data :capabilities new-capabilities)
 	  (plist-put state-data :sasl-client nil)
