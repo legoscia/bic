@@ -104,7 +104,8 @@ omitting the leading \"*\"."
 		      (cl-ecase connection-type
 			((:starttls :unencrypted) 143)
 			(:plaintls 993))))
-	 (buffer (generate-new-buffer (concat "bic-" server))))
+	 (buffer-name (concat " bic-" server "-" (plist-get state-data :username)))
+	 (buffer (generate-new-buffer buffer-name)))
     (condition-case e
 	(let ((proc (make-network-process
 		     :name (concat "bic-" server)
