@@ -108,7 +108,7 @@ omitting the leading \"*\"."
 	 (buffer (generate-new-buffer buffer-name)))
     (condition-case e
 	(let ((proc (make-network-process
-		     :name (concat "bic-" server)
+		     :name (concat "bic-" server "-" (plist-get state-data :username))
 		     :buffer buffer
 		     :host server
 		     :service service
