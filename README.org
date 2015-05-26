@@ -68,7 +68,8 @@ directory; you can remove that if you want.
 
 - At the moment, it only downloads messages from your inbox
   automatically.  For other mailboxes, messages are downloaded when
-  you open that mailbox.
+  you open that mailbox.  (This does not apply if your IMAP server
+  supports NOTIFY.)
 - It's too verbose, showing too many messages in the echo area.
 - There is currently no way to access messages older than 30 days,
   unless they are unread or flagged.
@@ -83,6 +84,11 @@ directory; you can remove that if you want.
 - If you enter the wrong password, BIC will repeatedly try to connect
   using the incorrect password until you run =M-x
   auth-source-forget-all-cached=.
+- While BIC attempts to open connections asynchronously, Emacs
+  currently performs DNS requests synchronously.  This can sometimes
+  lead to the user interface being blocked while BIC tries to
+  reconnect to the server.  There was
+  [[https://lists.gnu.org/archive/html/emacs-devel/2015-02/msg00830.html][a thread about this on emacs-devel]].
 
 ** Troubleshooting
 
@@ -101,7 +107,17 @@ look for more information:
 - Currently, the =*Messages*= buffer gets more than its fair share of
   various more or less informative messages.
 
+** What about sending email?
+Note that BIC is the Best IMAP Client, not the Best SMTP Client =:)=
+You should look into the =smtpmail= library that is included with
+Emacs.
+
+BIC can integrate with smtpmail, to make it queue outgoing messages
+while you're offline, and send them automatically when you come online
+again.  To enable that behaviour, set =bic-smtpmail-toggle-queueing=
+to =t=.
+
 ** Contact
 
-Feel free to open an issue in the issue tracker, or send me an email
+Feel free to open an issue in [[https://github.com/legoscia/bic/issues][the issue tracker]], or send me an email
 at =magnus.henoch@gmail.com=.
