@@ -38,7 +38,7 @@
     (cl-pushnew 'bic-message-mode (cdr message-entry))))
 
 ;;;###autoload
-(with-eval-after-load "bic"
+(with-eval-after-load "bic-message"
   (define-key bic-message-mode-map ":" 'bbdb-mua-display-all-records))
 
 (provide 'bic-bbdb)
