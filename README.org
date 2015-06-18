@@ -69,16 +69,19 @@ directory; you can remove that if you want.
 - At the moment, it only downloads messages from your inbox
   automatically.  For other mailboxes, messages are downloaded when
   you open that mailbox.  (This does not apply if your IMAP server
-  supports NOTIFY.)
+  supports NOTIFY.)  You can use =M-x bic-list-status-all= to
+  explicitly sync all subscribed mailboxes.
+- The unread message count in the mailbox tree view is currently
+  only updated when you explicity request a status update.
 - It's too verbose, showing too many messages in the echo area.
 - There is currently no way to access messages older than 30 days,
   unless they are unread or flagged.
+- If a large number of messages has been downloaded for a certain
+  mailbox, opening that mailbox will take a long time.
 - It doesn't detect that messages have been deleted on the server.
 - There is currently no way to copy or move messages.
 - Messages are not threaded.
 - There is no search function.
-- The unread message count in the mailbox tree view is currently
-  hard-coded to 42.
 - If the server doesn't support =IDLE=, messages will be downloaded
   rather infrequently.
 - If you enter the wrong password, BIC will repeatedly try to connect
