@@ -2201,5 +2201,27 @@ Like `prin1', but escape newlines, and bind variables to avoid surprises."
        (user-error "No sync level specified"))))
   (fsm-send (bic--find-account account) (list :sync-level mailbox sync-level)))
 
+;;; Utility functions
+
+(defun bic--read-existing-account (prompt require-match)
+  "Read the name of an email account with completion.
+If REQUIRE-MATCH is non-nil, only accept accounts that we know
+about."
+  (let ((accounts (directory-files bic-data-directory nil "@")))
+    (completing-read prompt accounts nil require-match)))
+
+(defun bic--directory-directories (dir regexp)
+  "Like `directory-files', but only returns directories."
+  (cl-remove-if-not
+   (lambda (file)
+     (file-directory-p (expand-file-name file dir)))
+   (directory-files dir nil regexp)))
+
+(defun bic--read-mailbox (prompt account require-match)
+  "Read the name of a mailbox for ACCOUNT."
+  (let ((mailboxes (bic--directory-directories (expand-file-name account bic-data-directory) "[^.]")))
+    (completing-read prompt (mapcar #'bic--unsanitize-mailbox-name mailboxes)
+		     nil require-match)))
+
 (provide 'bic)
 ;;; bic.el ends here
