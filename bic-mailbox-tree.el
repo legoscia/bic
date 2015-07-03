@@ -162,11 +162,14 @@ user expects."
 		 children)))
 	  (cond
 	   ((and account-widget new-state)
-	    ;; State change for exisiting account
-	    (let ((node (car (widget-get account-widget :children))))
+	    ;; State change for existing account
+	    (let ((new-tag (bic-mailbox-tree--account-tag account new-state))
+		  (node (car (widget-get account-widget :children))))
 	      (if (null node)
 		  (warn "no node: %S" account-widget)
-		(widget-put node :tag (bic-mailbox-tree--account-tag account new-state))
+		;; XXX: not sure why we need to put the tag in two places
+		(widget-put account-widget :tag new-tag)
+		(widget-put node :tag new-tag)
 		;; Redraw.
 		(widget-value-set node (widget-value node)))))
 	   ((or

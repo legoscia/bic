@@ -1179,7 +1179,7 @@ file and return t."
      mailboxes)
     ;; Run in timer, to isolate errors.
     (run-with-timer
-     0.1 nil
+     0 nil
      #'run-hook-with-args 'bic-account-mailbox-update-functions
      address nil nil)))
 
