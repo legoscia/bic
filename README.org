@@ -57,12 +57,13 @@ corresponding buffer for more information.
 ** How to stop using it
 
 If you just want to stay disconnected for a while, use =M-x
-bic-deactivate=, and then use =M-x bic-activate= when you want to
-reconnect.
+bic-deactivate= or =M-x bic-deactivate-all=, and then use =M-x
+bic-activate= or =M-q bic-activate-all= when you want to reconnect.
 
 If you want to stop BIC, type =M-x bic-stop= for each account you have
-added.  All downloaded data is stored in the =~/.emacs.d/bic=
-directory; you can remove that if you want.
+added, or =M-x bic-stop-all= to stop all accounts.  All downloaded
+data is stored in the =~/.emacs.d/bic= directory; you can remove that
+if you want.
 
 ** Known problems
 
