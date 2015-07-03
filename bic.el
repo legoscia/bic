@@ -117,12 +117,28 @@ until reactivated with `bic-activate'."
   (interactive (list (bic--read-running-account)))
   (fsm-send (bic--find-account account) :deactivate))
 
+(defun bic-deactivate-all ()
+  "Temporarily deactivate all accounts.
+Close any existing connections, and don't attempt to reconnect
+until reactivated with `bic-activate' or `bic-activate-all'."
+  (interactive)
+  (dolist (a bic-running-accounts)
+    (fsm-send a :deactivate)))
+
 (defun bic-activate (account)
   "Reactivate ACCOUNT.
 Attempt to reconnect to an account previously disabled with
 `bic-deactivate'."
   (interactive (list (bic--read-running-account)))
   (fsm-send (bic--find-account account) :activate))
+
+(defun bic-activate-all ()
+  "Reactivate all accounts.
+Attempt to reconnect any accounts previously disabled with
+`bic-deactivate' or `bic-deactivate-all'."
+  (interactive)
+  (dolist (a bic-running-accounts)
+    (fsm-send a :activate)))
 
 (defun bic-stop (account)
   "Stop the BIC state machine for ACCOUNT.
@@ -131,6 +147,13 @@ If you want to keep using BIC, but stop it from attempting to
 reconnect to a certain account, use `bic-deactivate' instead."
   (interactive (list (bic--read-running-account)))
   (fsm-send (bic--find-account account) :stop))
+
+(defun bic-stop-all ()
+  "Stop the BIC state machines for all accounts.
+See `bic-stop'."
+  (interactive)
+  (dolist (a bic-running-accounts)
+    (fsm-send a :stop)))
 
 (defun bic--read-running-account ()
   "Read the name of a running account from the minibuffer."
