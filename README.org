@@ -110,6 +110,14 @@ look for more information:
 - Currently, the =*Messages*= buffer gets more than its fair share of
   various more or less informative messages.
 
+If BIC makes Emacs slow, try profiling it to find out which part of
+the code needs to be optimised:
+
+- =M-x profiler-start=
+- Do whatever makes Emacs slow.
+- =M-x profiler-report=
+- Afterwards, deactivate profiling with =M-x profiler-stop=.
+
 ** What about sending email?
 Note that BIC is the Best IMAP Client, not the Best SMTP Client =:)=
 You should look into the =smtpmail= library that is included with
