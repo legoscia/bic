@@ -1279,18 +1279,26 @@ file and return t."
 	      (plist-put (cdr mailbox-entry) :exists (string-to-number (cl-first exists-entry))))
 
 	    (cond
-	     (highestmodseq-entry
-	      (let ((old-modseq
-		     (when (file-exists-p modseq-file)
-		       (with-temp-buffer
-			 (insert-file-contents-literally modseq-file)
-			 (split-string (buffer-string) "-"))))
-		    (new-modseq (plist-get (cdr highestmodseq-entry) :data)))
+	     ((and highestmodseq-entry
+		   (bic-connection--has-capability
+		    "CONDSTORE" (plist-get state-data :connection)))
+	      (let* ((old-modseq-string
+		      (when (file-exists-p modseq-file)
+			(with-temp-buffer
+			  (insert-file-contents-literally modseq-file)
+			  (buffer-string))))
+		     (old-modseq-pair (and old-modseq-string (split-string old-modseq-string "-")))
+		     (new-modseq (plist-get (cdr highestmodseq-entry) :data)))
 		(plist-put (cdr mailbox-entry) :our-modseq
-			   (when (and old-modseq
-				      (string= (car old-modseq) uidvalidity))
-			     (cadr old-modseq)))
-		(plist-put (cdr mailbox-entry) :server-modseq new-modseq)))
+			   (when (and old-modseq-string
+				      (string= (car old-modseq-pair) uidvalidity))
+			     (cadr old-modseq-pair)))
+		(plist-put (cdr mailbox-entry) :server-modseq new-modseq)
+		(unless (string= (cadr old-modseq-pair) new-modseq)
+		  ;; The modseq differs.  If the mailbox is to be
+		  ;; synced, schedule a sync now.
+		  (bic--queue-task-if-new state-data
+					  (bic--mailbox-sync-task state-data mailbox-name)))))
 	     ((or nomodseq-entry
 		  (not (bic-connection--has-capability
 			"CONDSTORE" (plist-get state-data :connection))))
