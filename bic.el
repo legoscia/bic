@@ -1317,7 +1317,7 @@ file and return t."
     (plist-put state-data :selected mailbox-name)))
 
 (defun bic--queue-task-if-new (state-data task)
-  (unless (equal task (plist-get state-data :current-task))
+  (unless (or (null task) (equal task (plist-get state-data :current-task)))
     (let ((existing-tasks (plist-get state-data :tasks)))
       (unless (member task existing-tasks)
 	(plist-put state-data :tasks
