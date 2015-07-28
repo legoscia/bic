@@ -1143,7 +1143,9 @@ If no sync needed, return an empty list."
 		     (cadr our-modseq-pair)
 		     (plist-get (cdr mailbox-data) :server-modseq)))))))
     (when needs-sync
-      (list (bic--mailbox-sync-task state-data (car mailbox-data))))))
+      (let ((task (bic--mailbox-sync-task state-data (car mailbox-data))))
+	(when task
+	  (list task))))))
 
 (defun bic--mailbox-sync-task (state-data mailbox-name)
   "Return the appropriate sync task for MAILBOX-NAME.
