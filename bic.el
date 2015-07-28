@@ -674,88 +674,21 @@ ACCOUNT is a string of the form \"username@server\"."
 				     (bic--mailbox-sync-level state-data selected))
 			   '(:limit 100)))))
 	  (list :connected state-data nil))
+	 (`(,_ "FETCH" ,_msg-att)
+	  ;; XXX: this is ugly. In bic--handle-fetch-response, we
+	  ;; check the UIDVALIDITY value of the mailbox, but here we
+	  ;; don't have any reliable value, so we just fetch the
+	  ;; stored value, rendering the check meaningless.
+	  (let* ((mailbox-plist (cdr (assoc selected (plist-get state-data :mailboxes))))
+		 (mailbox-uidvalidity (plist-get mailbox-plist :uidvalidity)))
+	    (bic--handle-fetch-response state-data selected untagged-response mailbox-uidvalidity))
+	  (list :connected state-data nil))
 	 (_
 	  (warn "Unexpected untagged response %S" untagged-response)
 	  nil))))
     (`(:early-fetch-response ,selected-mailbox ,msg ,uidvalidity)
-     (let* ((dir (bic--mailbox-dir state-data selected-mailbox))
-	    (overview-file (expand-file-name "overview" dir))
-	    (overview-table (bic--read-overview state-data selected-mailbox))
-	    (uid-tree (gethash selected-mailbox (plist-get state-data :uid-tree-per-mailbox)))
-	    (flags-file (expand-file-name "flags" dir))
-	    (flags-table (bic--read-flags-table state-data selected-mailbox))
-	    (coding-system-for-write 'binary))
-       (pcase msg
-	 (`(,_seq "FETCH" ,msg-att)
-	  (let* ((uid-entry (member "UID" msg-att))
-		 (uid (cadr uid-entry))
-		 (full-uid (when uid-entry (concat uidvalidity "-" uid)))
-		 (body-entry (member "BODY" msg-att))
-		 (envelope-entry (member "ENVELOPE" msg-att))
-		 (flags-entry (member "FLAGS" msg-att)))
-
-	    (let ((existing-flags (gethash full-uid flags-table))
-		  (new-flags (cadr flags-entry)))
-	      ;; TODO: do something clever if we don't know the UID
-	      (unless (or (null full-uid)
-			  (null flags-entry)
-			  (equal existing-flags new-flags)
-			  ;; Don't save flags for messages we don't
-			  ;; know anything else about.
-			  (and (null envelope-entry)
-			       (null (gethash full-uid overview-table))))
-		(puthash full-uid
-			 (cadr flags-entry)
-			 flags-table)
-		;; In the flags file, later entries override earlier
-		;; ones, so appending flags is safe.
-		;; TODO: rewrite flag file at suitable times
-		(with-temp-buffer
-		  (insert full-uid " ")
-		  (bic--print-sexp (bic-expand-literals new-flags))
-		  (insert "\n")
-		  (write-region (point-min) (point-max)
-				flags-file :append :silent))))
-
-	    (pcase body-entry
-	      ((guard (null uid))
-	       (message "Missing UID in FETCH response: %S" msg))
-	      (`("BODY" nil (,start-marker . ,end-marker) . ,_)
-	       ;; If we do more clever fetching at some point, we'd
-	       ;; have a non-nil section-spec.
-	       (with-current-buffer (marker-buffer start-marker)
-		 (write-region
-		  start-marker end-marker
-		  (expand-file-name full-uid dir)
-		  nil :silent))
-	       (set-marker start-marker nil)
-	       (set-marker end-marker nil)
-	       (let ((envelope-data (bic-expand-literals (cadr envelope-entry))))
-		 ;; TODO: avoid duplicates
-		 (with-temp-buffer
-		   (insert full-uid " ")
-		   ;; TODO: better format?
-		   ;; XXX: escape CR?
-		   (bic--print-sexp envelope-data)
-		   (insert "\n")
-		   (write-region (point-min) (point-max)
-				 overview-file :append :silent))
-		 (puthash full-uid envelope-data overview-table)
-		 (avl-tree-enter uid-tree (string-to-number uid))))
-	      (`("BODY" . ,other)
-	       (warn "Unexpected BODY in FETCH response: %S" other))
-	      (other
-	       ;; TODO: only warn if message absent in overview?
-	       ;; (message "Missing BODY in FETCH response: %S" other)
-	       ))
-
-	    (unless (null full-uid)
-	      (bic-mailbox--maybe-update-message
-	       (plist-get state-data :address)
-	       selected-mailbox full-uid))))
-	 (other
-	  (message "Unexpected response to FETCH request: %S" other)))
-       (list :connected state-data)))
+     (bic--handle-fetch-response state-data selected-mailbox msg uidvalidity)
+     (list :connected state-data))
     (`(:get-mailbox-tables ,mailbox)
      (let ((overview-table (bic--read-overview state-data mailbox))
 	   (flags-table (bic--read-flags-table state-data mailbox))
@@ -1056,6 +989,86 @@ It also includes underscore, which is used as an escape character.")
 	  (`(,task)
 	   (bic--queue-task-if-new state-data task)
 	   (bic--maybe-next-task fsm state-data)))))))
+
+(defun bic--handle-fetch-response (state-data selected-mailbox msg uidvalidity)
+  (let* ((dir (bic--mailbox-dir state-data selected-mailbox))
+	 (overview-file (expand-file-name "overview" dir))
+	 (overview-table (bic--read-overview state-data selected-mailbox))
+	 (uid-tree (gethash selected-mailbox (plist-get state-data :uid-tree-per-mailbox)))
+	 (flags-file (expand-file-name "flags" dir))
+	 (flags-table (bic--read-flags-table state-data selected-mailbox))
+	 (coding-system-for-write 'binary))
+    (pcase msg
+      (`(,_seq "FETCH" ,msg-att)
+       (let* ((uid-entry (member "UID" msg-att))
+	      (uid (cadr uid-entry))
+	      (full-uid (when uid-entry (concat uidvalidity "-" uid)))
+	      (body-entry (member "BODY" msg-att))
+	      (envelope-entry (member "ENVELOPE" msg-att))
+	      (flags-entry (member "FLAGS" msg-att)))
+
+	 (let ((existing-flags (gethash full-uid flags-table))
+	       (new-flags (cadr flags-entry)))
+	   ;; TODO: do something clever if we don't know the UID
+	   (unless (or (null full-uid)
+		       (null flags-entry)
+		       (equal existing-flags new-flags)
+		       ;; Don't save flags for messages we don't
+		       ;; know anything else about.
+		       (and (null envelope-entry)
+			    (null (gethash full-uid overview-table))))
+	     (puthash full-uid
+		      (cadr flags-entry)
+		      flags-table)
+	     ;; In the flags file, later entries override earlier
+	     ;; ones, so appending flags is safe.
+	     ;; TODO: rewrite flag file at suitable times
+	     (with-temp-buffer
+	       (insert full-uid " ")
+	       (bic--print-sexp (bic-expand-literals new-flags))
+	       (insert "\n")
+	       (write-region (point-min) (point-max)
+			     flags-file :append :silent))))
+
+	 (pcase body-entry
+	   ((guard (null uid))
+	    (message "Missing UID in FETCH response: %S" msg))
+	   (`("BODY" nil (,start-marker . ,end-marker) . ,_)
+	    ;; If we do more clever fetching at some point, we'd
+	    ;; have a non-nil section-spec.
+	    (with-current-buffer (marker-buffer start-marker)
+	      (write-region
+	       start-marker end-marker
+	       (expand-file-name full-uid dir)
+	       nil :silent))
+	    (set-marker start-marker nil)
+	    (set-marker end-marker nil)
+	    (let ((envelope-data (bic-expand-literals (cadr envelope-entry))))
+	      ;; TODO: avoid duplicates
+	      (with-temp-buffer
+		(insert full-uid " ")
+		;; TODO: better format?
+		;; XXX: escape CR?
+		(bic--print-sexp envelope-data)
+		(insert "\n")
+		(write-region (point-min) (point-max)
+			      overview-file :append :silent))
+	      (puthash full-uid envelope-data overview-table)
+	      (avl-tree-enter uid-tree (string-to-number uid))))
+	   (`("BODY" . ,other)
+	    (warn "Unexpected BODY in FETCH response: %S" other))
+	   (other
+	    ;; TODO: only warn if message absent in overview?
+	    ;; (message "Missing BODY in FETCH response: %S" other)
+	    ))
+
+	 (unless (null full-uid)
+	   (bic-mailbox--maybe-update-message
+	    (plist-get state-data :address)
+	    selected-mailbox full-uid))))
+      (other
+       (message "Unexpected response to FETCH request: %S" other)))
+    ))
 
 (defun bic--handle-lsub-response (_fsm state-data lsub-data)
   (let ((mailboxes (plist-get state-data :mailboxes))
