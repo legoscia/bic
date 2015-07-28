@@ -985,7 +985,7 @@ It also includes underscore, which is used as an escape character.")
       ;; TODO: check MESSAGES, UIDNEXT etc for empty mailboxes: no need
       ;; to sync them.
       (when queue-sync-tasks
-	(pcase (bic--mailbox-sync-task state-data mailbox-entry)
+	(pcase (bic--mailbox-sync-task-maybe state-data mailbox-entry)
 	  (`(,task)
 	   (bic--queue-task-if-new state-data task)
 	   (bic--maybe-next-task fsm state-data)))))))
@@ -1115,14 +1115,14 @@ It also includes underscore, which is used as an escape character.")
   (let ((download-messages-tasks
 	 (cl-mapcan
 	  (lambda (mailbox-data)
-	    (bic--mailbox-sync-task state-data mailbox-data))
+	    (bic--mailbox-sync-task-maybe state-data mailbox-data))
 	  (plist-get state-data :mailboxes))))
     (plist-put state-data :tasks
 	       (append (plist-get state-data :tasks)
 		       download-messages-tasks))
     (fsm-send fsm (list :task-finished task))))
 
-(defun bic--mailbox-sync-task (state-data mailbox-data)
+(defun bic--mailbox-sync-task-maybe (state-data mailbox-data)
   "Check whether to sync a mailbox.
 If sync needed, return a list of one task.
 If no sync needed, return an empty list."
@@ -1143,11 +1143,16 @@ If no sync needed, return an empty list."
 		     (cadr our-modseq-pair)
 		     (plist-get (cdr mailbox-data) :server-modseq)))))))
     (when needs-sync
-      (cl-case (bic--mailbox-sync-level state-data (car mailbox-data))
-	(:unlimited-sync
-	 (list (list (car mailbox-data) :sync-mailbox)))
-	(:partial-sync
-	 (list (list (car mailbox-data) :sync-mailbox :limit 100)))))))
+      (list (bic--mailbox-sync-task state-data (car mailbox-data))))))
+
+(defun bic--mailbox-sync-task (state-data mailbox-name)
+  "Return the appropriate sync task for MAILBOX-NAME.
+Return nil if mailbox should not be synced."
+  (cl-case (bic--mailbox-sync-level state-data mailbox-name)
+    (:unlimited-sync
+     (list mailbox-name :sync-mailbox))
+    (:partial-sync
+     (list mailbox-name :sync-mailbox :limit 100))))
 
 (defun bic--set-sync-level (state-data mailbox new-sync-level)
   "Update sync level for MAILBOX in STATE-DATA.
