@@ -1194,8 +1194,11 @@ file and return t."
     (bic--infer-sync-level mailbox-data)))
 
 (defun bic--infer-sync-level (mailbox-data)
-  (let ((attributes (plist-get (cdr mailbox-data) :attributes))
-	(explicit-sync-level (plist-get (cdr mailbox-data) :explicit-sync-level)))
+  ;; Accept either a raw plist, or a plist prefixed with a mailbox name.
+  (when (stringp (car mailbox-data))
+    (setq mailbox-data (cdr mailbox-data)))
+  (let ((attributes (plist-get mailbox-data :attributes))
+	(explicit-sync-level (plist-get mailbox-data :explicit-sync-level)))
     (cond
      ((or (cl-member "\\Noselect" attributes :test #'cl-equalp)
 	  (cl-member "\\NonExistent" attributes :test #'cl-equalp))

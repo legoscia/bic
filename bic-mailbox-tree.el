@@ -71,6 +71,8 @@
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map special-mode-map)
     (define-key map (kbd "RET") 'bic-mailbox-tree-press-button-on-current-line)
+    (define-key map (kbd "s") 'bic-mailbox-tree-sync)
+    (define-key map (kbd "u") 'bic-mailbox-tree-no-sync)
     map))
 
 (define-derived-mode bic-mailbox-tree-mode special-mode "BIC mailbox tree"
@@ -93,15 +95,62 @@ user expects."
 	(user-error "No button on this line")
       (widget-apply-action button event))))
 
-(defun bic--button-on-current-line ()
+(defun bic-mailbox-tree-sync ()
+  "Set sync level for mailbox on current line.
+If the mailbox is not being synced, set it to unlimited sync.
+If the mailbox is being synced, toggle betweed unlimited and
+partial sync."
+  (interactive)
+  ;; Need to get the button that has the mailbox name as a property,
+  ;; not the tree widget button.
+  (let* ((button (bic--button-on-current-line
+		  (lambda (b) (not (null (widget-get b :mailbox-name))))))
+	 (account-name (and button (widget-get button :account-name)))
+	 (mailbox-name (and button (widget-get button :mailbox-name))))
+    (if (or (null button)
+	    (null account-name))
+	(user-error "No mailbox on this line")
+      (let* ((mailbox-data
+	      (gethash mailbox-name (gethash account-name bic-account-mailbox-table)))
+	     (new-sync-level
+	      (cl-ecase (bic--infer-sync-level mailbox-data)
+		((nil :partial-sync)
+		 (message "Changing %s to unlimited sync" mailbox-name)
+		 'unlimited-sync)
+		(:unlimited-sync
+		 (message "Changing %s to partial sync" mailbox-name)
+		 'partial-sync))))
+	(bic-mailbox-set-sync-level account-name mailbox-name new-sync-level)))))
+
+(defun bic-mailbox-tree-no-sync ()
+  "Set mailbox on current line to \"no sync\"."
+  (interactive)
+  (let* ((button (bic--button-on-current-line
+		  (lambda (b) (not (null (widget-get b :mailbox-name))))))
+	 (account-name (and button (widget-get button :account-name)))
+	 (mailbox-name (and button (widget-get button :mailbox-name))))
+    (if (or (null button)
+	    (null account-name))
+	(user-error "No mailbox on this line")
+      (message "Changing %s to no sync" mailbox-name)
+      (bic-mailbox-set-sync-level account-name mailbox-name 'no-sync))))
+
+(defun bic--button-on-current-line (&optional predicate)
   (save-excursion
     (forward-line 0)
-    (let ((button-pos
-	   (if (get-char-property (point) 'button)
-	       (point)
-	     (next-single-char-property-change
-	      (point) 'button nil (line-end-position)))))
-      (when button-pos (get-char-property button-pos 'button)))))
+    (let ((end (line-end-position))
+	  (button-pos (point))
+	  button)
+      (while (and (null button) button-pos (< button-pos end))
+	(setq button (get-char-property button-pos 'button))
+	(when predicate
+	  (unless (funcall predicate button)
+	    (setq button nil)))
+	(unless button
+	  (setq button-pos
+		(next-single-char-property-change
+		 button-pos 'button nil (line-end-position)))))
+      button)))
 
 ;;;###autoload
 (defun bic-mailbox-tree ()
