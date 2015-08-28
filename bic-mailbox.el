@@ -98,6 +98,7 @@ If there is no such buffer, return nil."
     (define-key map "c" 'bic-mailbox-catchup)
     (define-key map "n" 'bic-mailbox-next-unread)
     (define-key map " " 'bic-mailbox-next-page-or-next-unread)
+    (define-key map "=" 'bic-message-identify)
     map))
 
 (define-derived-mode bic-mailbox-mode special-mode "BIC mailbox"

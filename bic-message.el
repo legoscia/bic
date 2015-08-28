@@ -49,6 +49,7 @@
     (define-key map "n" 'bic-mailbox-next-unread)
     (define-key map " " 'bic-mailbox-next-page-or-next-unread)
     (define-key map "g" 'bic-message-reload)
+    (define-key map "=" 'bic-message-identify)
     map))
 
 (define-derived-mode bic-message-mode gnus-article-mode "BIC Message"
@@ -138,6 +139,16 @@ If ARG is a negative number, hide the unwanted header lines."
   (interactive "P")
   (cl-letf (((symbol-function 'gnus-set-mode-line) #'ignore))
     (gnus-summary-toggle-header arg)))
+
+;;;###autoload
+(defun bic-message-identify ()
+  "Display the UID, mailbox and account of the current message.
+The \"current\" message is the one displayed in a message buffer,
+or the message under point in a mailbox buffer."
+  (interactive)
+  (let ((full-uid (bic--find-message-at-point)))
+    (message "Message %s, in mailbox %s, account %s"
+	     full-uid bic--current-mailbox bic--current-account)))
 
 ;;;###autoload
 (defun bic-message-mark-read ()
