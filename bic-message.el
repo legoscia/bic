@@ -206,7 +206,8 @@ move point to the next message."
   (let ((full-uid (bic--find-message-at-point))
 	(mailbox bic--current-mailbox)
 	(account bic--current-account))
-    (set-buffer gnus-original-article-buffer)
+    (let (gnus-buffers)			;don't ask :(
+      (gnus-copy-article-buffer gnus-original-article-buffer))
     (message-reply nil wide)
     (add-to-list
      'message-send-actions
