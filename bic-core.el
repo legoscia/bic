@@ -1202,10 +1202,8 @@ destructively, and returns it."
 	   (buffer-substring start-marker end-marker)
 	 (set-marker start-marker nil)
 	 (set-marker end-marker nil))))
-    ((pred consp)
-     (setf (car sexp) (bic-expand-literals (car sexp)))
-     (setf (cdr sexp) (bic-expand-literals (cdr sexp)))
-     sexp)
+    ((pred listp)
+     (mapcar 'bic-expand-literals sexp))
     ((pred markerp)
      ;; This should have been caught in the first case.
      (error "Unexpected marker"))
