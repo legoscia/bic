@@ -673,7 +673,7 @@ For EARLY-CALLBACKS, see `bic-command'."
 	      (:bad
 	       (setq worst-response :bad)))
 	    (push response responses)
-	    (decf remaining)
+	    (cl-decf remaining)
 	    (when (zerop remaining)
 	      (funcall callback worst-response (nreverse responses))))))
     (or ranges (error "No UID ranges to send"))
@@ -879,7 +879,7 @@ VALUE must be greater than any marker previously issued."
 	 (let (mismatch (i 0))
 	   (while (and (not mismatch) (< i needle-length))
 	     (if (eq (elt needle i) (elt haystack (+ position i)))
-		 (incf i)
+		 (cl-incf i)
 	       (setq mismatch t)))
 	   (not mismatch)))))
 
@@ -908,8 +908,8 @@ VALUE must be greater than any marker previously issued."
 	  ;; Opening parenthesis.  If we're inside the envelope, enter it.
 	  (if envelope-parts
 	      (progn
-		(incf i)
-		(incf parenthesis-depth))
+		(cl-incf i)
+		(cl-incf parenthesis-depth))
 	    ;; Otherwise, try to skip over it.
 	    (condition-case _e
 		(setq i (nth 2 (bic--parse-line
@@ -922,10 +922,10 @@ VALUE must be greater than any marker previously issued."
 	       ;; segment.
 	       (pop line-so-far)
 	       (setq i 0)
-	       (incf parenthesis-depth)))))
+	       (cl-incf parenthesis-depth)))))
 	 (?\)
 	  ;; Closing parenthesis.
-	  (incf i)
+	  (cl-incf i)
 	  (setq parenthesis-depth (max 0 (1- parenthesis-depth)))
 	  (when (and (eq parenthesis-depth 1) (eq (car envelope-parts) 'address))
 	    ;; When dropping back to depth 1, we have finished one address.
@@ -952,7 +952,7 @@ VALUE must be greater than any marker previously issued."
 		  (pop envelope-parts))))))
 	 (?\s
 	  ;; Space.  Just move forward.
-	  (incf i))
+	  (cl-incf i))
 	 (_
 	  ;; Looks like an atom.  Is it ENVELOPE, perhaps?
 	  (cond

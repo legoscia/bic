@@ -270,7 +270,7 @@ Also hide messages marked for deletion."
      (lambda (full-uid)
        (unless (member "\\Seen" (gethash full-uid bic-mailbox--flags-table))
 	 (push full-uid messages)
-	 (incf count))
+	 (cl-incf count))
        nil)
      bic-mailbox--ewoc)
     (if (null messages)

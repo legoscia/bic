@@ -1643,7 +1643,7 @@ file and return t."
 			(bic--interesting-status-items c)
 			")")
 		(lambda (_response)
-		  (when (zerop (decf remaining))
+		  (when (zerop (cl-decf remaining))
 		    (fsm-send fsm (list :task-finished task)))))))))))
     (`(,_ :logout)
      ;; No need for a callback - this is the last task.
@@ -1771,7 +1771,7 @@ file and return t."
 				 (throw 'done t)
 			       (push (concat uidvalidity "-" (bic-number-to-string uid))
 				     expunged-full-uids)
-			       (incf expunged-count)))
+			       (cl-incf expunged-count)))
 			   uid-tree nil)))
 		      (when (< actual-max max)
 			;; The messages above actual-max have been
@@ -1785,7 +1785,7 @@ file and return t."
 				 (throw 'done t)
 			       (push (concat uidvalidity "-" (bic-number-to-string uid))
 				     expunged-full-uids)
-			       (incf expunged-count)))
+			       (cl-incf expunged-count)))
 			   uid-tree t)))
 		      (bic--messages-expunged state-data mailbox expunged-full-uids)))))
 	       (`(:ok ,_ ,other-search-data)
