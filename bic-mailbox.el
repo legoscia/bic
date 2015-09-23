@@ -302,7 +302,7 @@ Also hide messages marked for deletion."
   (unless (derived-mode-p 'bic-mailbox-mode)
     (user-error "Not a mailbox buffer"))
   (fsm-send (bic--find-account bic--current-account)
-	    `(:ensure-up-to-date ,bic--current-mailbox)))
+	    `(:ensure-up-to-date ,bic--current-mailbox :verbose t)))
 
 (defun bic-mailbox-read-message (keep-unread)
   "Open the message under point, and mark it as read.

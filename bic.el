@@ -752,12 +752,13 @@ ACCOUNT is a string of the form \"username@server\"."
 	(plist-put state-data :current-task nil)))
      (bic--maybe-next-task fsm state-data)
      (list :connected state-data))
-    (`(:ensure-up-to-date ,mailbox)
+    (`(:ensure-up-to-date ,mailbox . ,options)
      (bic--queue-task-if-new
       state-data
       `(,mailbox :sync-mailbox
 		 ,@(unless (eq :unlimited-sync (bic--mailbox-sync-level state-data mailbox))
-		     '(:limit 100))))
+		     '(:limit 100))
+		 :verbose ,(plist-get options :verbose)))
      (bic--maybe-next-task fsm state-data)
      (list :connected state-data))
     (:activate
@@ -1906,6 +1907,7 @@ file and return t."
 		     :uidvalidity))
 	 (overview-table (bic--read-overview state-data mailbox))
 	 (limit (plist-get (cddr task) :limit))
+	 (verbose (plist-get (cddr task) :verbose))
 	 fetch-these not-these-unseen not-these-recent
 	 (mailbox-table (gethash (plist-get state-data :address) bic-account-mailbox-table))
 	 (mailbox-entry (gethash mailbox mailbox-table)))
@@ -1984,8 +1986,9 @@ file and return t."
       (pcase (cl-delete-if uid-overview (gnus-uncompress-range fetch-these))
 	(`nil
 	 (funcall write-modseq)
-	 (message "Nothing to fetch from %s for %s"
-		  mailbox (plist-get state-data :address))
+	 (when verbose
+	   (message "Nothing to fetch from %s for %s"
+		    mailbox (plist-get state-data :address)))
 	 (fsm-send fsm (list :task-finished task)))
 	(filtered-search-results
 	 (let* ((c (plist-get state-data :connection))
