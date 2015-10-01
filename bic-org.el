@@ -27,30 +27,42 @@
 
 ;;;###autoload
 (defun bic-org-store-link ()
-  (cond
-   ((derived-mode-p 'bic-message-mode)
-    (org-store-link-props
-     :type "bic"
-     ;; TODO: add :description
-     :link
-     (concat "bic:"
-	     (bic--sanitize-mailbox-name bic--current-account)
-	     ":"
-	     (bic--sanitize-mailbox-name bic--current-mailbox)
-	     ":"
-	     bic-message--full-uid)))
-   ((derived-mode-p 'bic-mailbox-mode)
-    ;; In a mailbox buffer, create a link to the message under point.
-    (org-store-link-props
-     :type "bic"
-     ;; TODO: add :description
-     :link
-     (concat "bic:"
-	     (bic--sanitize-mailbox-name bic--current-account)
-	     ":"
-	     (bic--sanitize-mailbox-name bic--current-mailbox)
-	     ":"
-	     (ewoc-data (ewoc-locate bic-mailbox--ewoc (point))))))))
+  (let ((full-uid
+	 (cond
+	  ((derived-mode-p 'bic-message-mode)
+	   bic-message--full-uid)
+	  ((derived-mode-p 'bic-mailbox-mode)
+	   ;; In a mailbox buffer, create a link to the message under point.
+	   (ewoc-data (ewoc-locate bic-mailbox--ewoc (point)))))))
+    (when full-uid
+      (let* ((link (concat "bic:"
+			   (bic--sanitize-mailbox-name bic--current-account)
+			   ":"
+			   (bic--sanitize-mailbox-name bic--current-mailbox)
+			   ":"
+			   full-uid))
+	     (mailbox-buffer (bic-mailbox--find-buffer
+			      bic--current-account bic--current-mailbox))
+	     (hashtable (when mailbox-buffer
+			  (buffer-local-value 'bic-mailbox--hashtable mailbox-buffer)))
+	     (envelope (when hashtable
+			 (gethash full-uid hashtable))))
+	(pcase envelope
+	  (`(,date ,subject ,from ,_sender ,_reply-to ,to ,_cc ,_bcc ,_in-reply-to ,message-id)
+	   (org-store-link-props
+	    :type "bic"
+	    :link link
+	    :date date
+	    :subject subject
+	    :message-id message-id
+	    :from (pcase from
+		    (`((,name ,_source-route ,mailbox-name ,host-name) . ,_)
+		     (mail-header-make-address name (concat mailbox-name "@" host-name))))
+	    :to (pcase to
+		  (`((,name ,_source-route ,mailbox-name ,host-name) . ,_)
+		   (mail-header-make-address name (concat mailbox-name "@" host-name)))))
+	   (org-add-link-props :description (org-email-link-description))
+	   link))))))
 
 ;;;###autoload
 (with-eval-after-load "org"
