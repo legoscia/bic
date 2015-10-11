@@ -61,6 +61,10 @@
 
 (defvar-local bic-mailbox--uid-tree nil)
 
+(defvar-local bic-mailbox--fixup-times-timer nil)
+
+(defvar-local bic-mailbox--fixup-times-at nil)
+
 ;;;###autoload
 (defun bic-mailbox-open (account mailbox)
   (interactive
@@ -233,17 +237,79 @@ If there is no such buffer, return nil."
     (if (null date)
 	;; cannot parse
 	"**********"
-      (let ((days (- (time-to-days (current-time)) (time-to-days parsed-date))))
+      (let* ((now (time-to-days (current-time)))
+	     (days (- now (time-to-days parsed-date))))
 	(cond
 	 ((= days 0)
 	  ;; same day: show time
-	  (format-time-string "     %H:%M" parsed-date))
+	  (prog1
+	      (propertize (format-time-string "     %H:%M" parsed-date)
+			  'bic-mailbox--timestamp-without-date now)
+	    ;; Remember that we wrote a time-only date.
+	    (unless (and bic-mailbox--fixup-times-at (<= bic-mailbox--fixup-times-at now))
+	      ;; Need to fix this time tomorrow.
+	      (setq bic-mailbox--fixup-times-at (1+ now)))
+	    (bic-mailbox--fixup-times-maybe-start-timer)))
 	 ((< days 180)
 	  ;; less than half a year ago: show date without year
 	  (format "%10s" (format-time-string "%e %b" parsed-date)))
 	 (t
 	  ;; more than half a year ago, or in the future: show YYYY-MM-DD
 	  (format-time-string "%F" parsed-date)))))))
+
+(defun bic-mailbox--fixup-times (buffer)
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (unless (derived-mode-p 'bic-mailbox-mode)
+	(error "Not a mailbox buffer"))
+      (let ((now (time-to-days (current-time)))
+	    (pos (point-min))
+	    (node nil)
+	    (have-more nil))
+	(while (setq pos (next-single-property-change pos 'bic-mailbox--timestamp-without-date))
+	  (let ((day (get-text-property pos 'bic-mailbox--timestamp-without-date)))
+	    (when (numberp day)
+	      (cond
+	       ((< day now)
+		(setq node (ewoc-locate bic-mailbox--ewoc pos node))
+		(bic-mailbox--invalidate bic-mailbox--ewoc node))
+	       ((= day now)
+		(setq have-more t))))))
+	(if have-more
+	    (progn
+	      (setq bic-mailbox--fixup-times-at (1+ now))
+	      (bic-mailbox--fixup-times-maybe-start-timer))
+	  (setq bic-mailbox--fixup-times-at nil
+		bic-mailbox--fixup-times-timer nil))))))
+
+(defun bic-mailbox--fixup-times-maybe-start-timer ()
+  (unless (or
+	   ;; If there's already a timer that's set to run in the
+	   ;; future, there's no need to set a new one.
+	   (and (timerp bic-mailbox--fixup-times-timer)
+		(> 0 (timer-until bic-mailbox--fixup-times-timer (current-time))))
+	   ;; Also check that there's a time when the timer needs to
+	   ;; be run.
+	   (null bic-mailbox--fixup-times-at))
+    (let* ((utc-midnight
+	    ;; NB: `bic-mailbox--fixup-times-at' was returned from
+	    ;; `time-to-days', which returns the number of days from
+	    ;; year 1.  However, `days-to-time' expects as its argument
+	    ;; the number of days since the epoch.  Thus, we need to
+	    ;; adjust the value.
+
+	    ;; That gives us UTC midnight of the given day.
+	    (days-to-time (- bic-mailbox--fixup-times-at
+			     (time-to-days 0))))
+	  (local-midnight
+	   ;; Then we need to subtract the time zone offset, to get
+	   ;; the local midnight.
+	   (time-subtract utc-midnight (or (car (current-time-zone utc-midnight)) 0))))
+      (setq bic-mailbox--fixup-times-timer
+	    (run-at-time
+	     local-midnight
+	     nil
+	     'bic-mailbox--fixup-times (current-buffer))))))
 
 (defun bic-mailbox-hide-read ()
   "Hide messages that are marked as read, but not flagged.
@@ -390,15 +456,20 @@ If at the end of the message, show next unread message."
 	bic-mailbox--ewoc-nodes-table))
       (node
        (when (ewoc-location node)
-	 (let ((old-point (point)))
-	   ;; We use an integer instead of a marker, because we don't
-	   ;; expect the size of the entry to change, and if point was
-	   ;; on this entry or immediately after it, we would lose the
-	   ;; precise position and instead go back to the start of the
-	   ;; entry if we used a marker.
-	   (unwind-protect
-	       (ewoc-invalidate bic-mailbox--ewoc node)
-	     (goto-char old-point))))))))
+	 (bic-mailbox--invalidate bic-mailbox--ewoc node))))))
+
+(defun bic-mailbox--invalidate (ewoc node)
+  "Like `ewoc-invalidate', but ensure point doesn't move.
+Assumes that the size of the entry won't change."
+  (let ((old-point (point)))
+    ;; We use an integer instead of a marker, because we don't
+    ;; expect the size of the entry to change, and if point was
+    ;; on this entry or immediately after it, we would lose the
+    ;; precise position and instead go back to the start of the
+    ;; entry if we used a marker.
+    (unwind-protect
+	(ewoc-invalidate ewoc node)
+      (goto-char old-point))))
 
 ;;;###autoload
 (defun bic-mailbox--maybe-remove-message (address mailbox full-uid)
