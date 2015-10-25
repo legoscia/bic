@@ -607,7 +607,10 @@ omitting the leading \"*\"."
 	    (response-acc (plist-get state-data :response-acc)))
        (plist-put state-data :response-acc nil)
        (plist-put state-data :pending-commands new-pending-commands)
-       (funcall command-callback (list type rest response-acc))))
+       (if command-callback
+	   (funcall command-callback (list type rest response-acc))
+	 (warn "Unknown tag `%s' when processing line `%s'"
+	       tag line))))
     (_
      (fsm-debug-output "Unexpected line: '%s'" line))))
 
