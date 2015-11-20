@@ -2134,12 +2134,12 @@ file and return t."
 		    nil t)
 	      (let* ((full-uid (match-string 1))
 		     (add-remove (match-string 2))
-		     (flags (car (read-from-string (match-string 3))))
+		     (flag (match-string 3))
 		     (existing-flags (gethash full-uid flags-table))
 		     (new-flags
 		      (pcase add-remove
-			("+" (cl-union existing-flags flags :test 'string=))
-			("-" (cl-set-difference existing-flags flags :test 'string=)))))
+			("+" (cl-union existing-flags (list flag) :test 'string=))
+			("-" (remove flag existing-flags)))))
 		(puthash full-uid (cl-adjoin :pending new-flags) flags-table)))))))
     flags-table))
 
