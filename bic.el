@@ -1449,7 +1449,8 @@ file and return t."
 		    (ranges
 		     (gnus-compress-sequence
 		      (sort (mapcar 'string-to-number uids) '<)
-		      t)))
+		      t))
+		    (returned-uids nil))
 		;; On a 32-bit Emacs, ranges may contain floating point
 		;; numbers - but they're exact enough to represent 32-bit
 		;; integers.
@@ -1477,6 +1478,35 @@ file and return t."
 			 (insert-file-contents-literally pending-flags-file)
 			 (write-region file-offset (point-max) pending-flags-file
 				       nil :silent))
+
+		       ;; If we didn't get a FETCH response for some
+		       ;; of the messages, perhaps they have already
+		       ;; been deleted.  Let's do a SEARCH for those
+		       ;; UIDs just to be sure, and consider those we
+		       ;; don't get back to have been deleted.
+		       (let ((missing-uids (gnus-remove-from-range ranges returned-uids)))
+			 (when missing-uids
+			   (bic-command
+			    c
+			    (concat "UID SEARCH UID "
+				    (bic-format-ranges missing-uids))
+			    (lambda (search-response)
+			      (pcase search-response
+				(`(:ok ,_ ,search-data)
+				 (let* ((search-results
+					 (mapcar #'string-to-number
+						 (cdr (assoc "SEARCH" search-data))))
+					(still-missing (gnus-remove-from-range
+							missing-uids
+							search-results)))
+				   (bic--messages-expunged
+				    state-data mailbox
+				    (mapcar (lambda (uid)
+					      (concat mailbox-uidvalidity "-"
+						      (bic-number-to-string uid)))
+					    still-missing))))))
+			    '((0 "SEARCH" :keep)))))
+
 		       ;; If we added the \Deleted flag, also expunge:
 		       (pcase (gethash '("+" . "\\Deleted") flag-change-uids)
 			 (`nil
@@ -1517,6 +1547,14 @@ file and return t."
 		 (list
 		  (list 1 "FETCH"
 			(lambda (one-fetch-response)
+			  ;; Remember which UIDs we've seen FETCH
+			  ;; responses for.
+			  (pcase one-fetch-response
+			    (`(,_seq "FETCH" ,msg-att)
+			     (let* ((uid-entry (member "UID" msg-att))
+				    (uid (cadr uid-entry)))
+			       (when uid
+				 (push (string-to-number uid) returned-uids)))))
 			  (fsm-send fsm (list :early-fetch-response
 					      mailbox
 					      one-fetch-response
