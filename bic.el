@@ -1318,7 +1318,8 @@ file and return t."
 
 	    (bic--read-flags-table state-data mailbox-name)
 	    (bic--read-overview state-data mailbox-name))
-	(warn "Missing UIDVALIDITY!  This is not good.")))
+	(warn "Missing UIDVALIDITY for `%s' (%s)!  This is not good."
+	      mailbox-name (plist-get state-data :address))))
 
     (plist-put state-data :selected mailbox-name)))
 
