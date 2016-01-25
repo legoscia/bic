@@ -92,7 +92,7 @@ if you want.
   currently performs DNS requests synchronously.  This can sometimes
   lead to the user interface being blocked while BIC tries to
   reconnect to the server.  There was
-  [[https://lists.gnu.org/archive/html/emacs-devel/2015-02/msg00830.html][a thread about this on emacs-devel]].
+  [[https://lists.gnu.org/archive/html/emacs-devel/2015-02/msg00830.html][a thread about this on emacs-devel]], and [[https://lists.gnu.org/archive/html/emacs-devel/2016-01/msg01348.html][another one]].
 
 ** Troubleshooting
 
