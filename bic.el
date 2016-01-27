@@ -715,6 +715,10 @@ ACCOUNT is a string of the form \"username@server\"."
      (bic--queue-task-if-new state-data (list mailbox :pending-flags))
      (bic--maybe-next-task fsm state-data)
      (list :connected state-data))
+    (`(:copy ,from-mailbox ,to-mailbox ,full-uid)
+     ;; TODO: offline-friendly
+     (bic--queue-task-if-new state-data (list from-mailbox :copy to-mailbox full-uid))
+     (list :connected state-data))
     (`(:sync-level ,mailbox ,new-sync-level)
      ;; Update sync level and maybe send subscribe command.
      (when (bic--set-sync-level state-data mailbox new-sync-level)
@@ -1398,175 +1402,7 @@ file and return t."
 (defun bic--do-task (fsm state-data task)
   (pcase task
     (`(,mailbox :pending-flags)
-     ;; At this point, we should have selected the mailbox already.
-     (cl-assert (string= mailbox (plist-get state-data :selected)))
-     (let ((pending-flags-file
-	    (expand-file-name "pending-flags" (bic--mailbox-dir state-data mailbox)))
-	   (mailbox-uidvalidity
-	    (plist-get (cdr (assoc mailbox
-				   (plist-get state-data :mailboxes)))
-		       :uidvalidity))
-	   (flag-change-uids (make-hash-table :test 'equal))
-	   (discarded 0)
-	   file-offset)
-       ;; Find sets of messages that have identical sets of flags
-       ;; applied, to minimise the number of commands we need to send.
-       (when (file-exists-p pending-flags-file)
-	 (with-temp-buffer
-	   (insert-file-contents-literally pending-flags-file)
-	   (goto-char (point-min))
-	   (while (search-forward-regexp
-		   (concat "^\\([0-9]+\\)-\\([0-9]+\\)\\([+-]\\)\\(.*\\)$")
-		   nil t)
-	     (let* ((uidvalidity (match-string 1))
-		    (uid (match-string 2))
-		    (add-remove (match-string 3))
-		    (flag (match-string 4))
-		    (opposite (car (remove add-remove '("+" "-")))))
-	       (if (string= uidvalidity mailbox-uidvalidity)
-		   ;; The pending flags file may contain an
-		   ;; instruction to set a flag for a message and then
-		   ;; clear it, or vice versa.  Ensure that we only
-		   ;; apply the last such instruction.
-		   (let* ((opposite-key (cons opposite flag))
-			  (opposite-uids (gethash opposite-key flag-change-uids)))
-		     (when (member uid opposite-uids)
-		       (setq opposite-uids (delete uid opposite-uids))
-		       (if (null opposite-uids)
-			   (remhash opposite-key flag-change-uids)
-			 (puthash opposite-key
-				  opposite-uids
-				  flag-change-uids)))
-		     (push uid (gethash (cons add-remove flag) flag-change-uids)))
-		 (cl-incf discarded))))
-	   (setq file-offset (point))))
-       (unless (zerop discarded)
-	 (warn "Discarding %d pending flag changes for %s"
-	       discarded mailbox))
-       (let ((c (plist-get state-data :connection))
-	     (remaining-entries-count (hash-table-count flag-change-uids))
-	     (all-successful t))
-	 (if (zerop remaining-entries-count)
-	     ;; Nothing to do.
-	     (fsm-send fsm (list :task-finished task))
-	   (maphash
-	    (lambda (add-remove-flag uids)
-	      (let ((add-remove (car add-remove-flag))
-		    (flag (cdr add-remove-flag))
-		    (ranges
-		     (gnus-compress-sequence
-		      (sort (mapcar 'string-to-number uids) '<)
-		      t))
-		    (returned-uids nil))
-		;; On a 32-bit Emacs, ranges may contain floating point
-		;; numbers - but they're exact enough to represent 32-bit
-		;; integers.
-		(bic-command
-		 c
-		 (concat "UID STORE " (bic-format-ranges ranges) " "
-			 add-remove "FLAGS ("
-			 ;; No need to quote flags; they should be atoms.
-			 flag ")")
-		 (lambda (store-response)
-		   ;; XXX: check additional responses
-		   (cl-decf remaining-entries-count)
-		   (unless (eq (car store-response) :ok)
-		     (warn "Couldn't change flags in %s: %s"
-			   mailbox
-			   (plist-get (cl-second store-response) :text))
-		     ;; Ensure we don't clear the pending flags file
-		     (setq all-successful nil))
-		   ;; All completed?  If so, clear pending flags file
-		   ;; up to the point where we read the last entry -
-		   ;; but keep it if there was an error.
-		   (when (zerop remaining-entries-count)
-		     (when all-successful
-		       (with-temp-buffer
-			 (insert-file-contents-literally pending-flags-file)
-			 (write-region file-offset (point-max) pending-flags-file
-				       nil :silent))
-
-		       ;; If we didn't get a FETCH response for some
-		       ;; of the messages, perhaps they have already
-		       ;; been deleted.  Let's do a SEARCH for those
-		       ;; UIDs just to be sure, and consider those we
-		       ;; don't get back to have been deleted.
-		       (let ((missing-uids (gnus-remove-from-range ranges returned-uids)))
-			 (when missing-uids
-			   (bic-command
-			    c
-			    (concat "UID SEARCH UID "
-				    (bic-format-ranges missing-uids))
-			    (lambda (search-response)
-			      (pcase search-response
-				(`(:ok ,_ ,search-data)
-				 (let* ((search-results
-					 (mapcar #'string-to-number
-						 (cdr (assoc "SEARCH" search-data))))
-					(still-missing (gnus-remove-from-range
-							missing-uids
-							search-results)))
-				   (bic--messages-expunged
-				    state-data mailbox
-				    (mapcar (lambda (uid)
-					      (concat mailbox-uidvalidity "-"
-						      (bic-number-to-string uid)))
-					    still-missing))))))
-			    '((0 "SEARCH" :keep)))))
-
-		       ;; If we added the \Deleted flag, also expunge:
-		       (pcase (gethash '("+" . "\\Deleted") flag-change-uids)
-			 (`nil
-			  ;; Nothing to expunge, task finished.
-			  (fsm-send fsm (list :task-finished task)))
-			 (deleted-uids
-			  (let ((expunge-command
-				 (if (bic-connection--has-capability "UIDPLUS" c)
-				     ;; We can use UID EXPUNGE to
-				     ;; expunge only the affected
-				     ;; messages.
-				     (concat
-				      "UID EXPUNGE "
-				      (bic-format-ranges
-				       (gnus-compress-sequence
-					(sort (mapcar #'string-to-number deleted-uids)
-					      #'<)
-					t)))
-				   ;; The server doesn't support
-				   ;; UIDPLUS.  Let's just expunge
-				   ;; everything that's marked
-				   ;; \Deleted, like Gnus does.
-				   "EXPUNGE")))
-			    (bic-command
-			     c expunge-command
-			     (lambda (expunge-response)
-			       (let ((response-lines (cl-third expunge-response)))
-				 (when response-lines
-				   ;; TODO: handle
-				   (warn "Unhandled responses to expunge request: %s"
-					 response-lines)))
-			       (unless (eq (car expunge-response) :ok)
-				 (warn "Couldn't expunge messages in %s: %s"
-				       mailbox
-				       (plist-get (cl-second expunge-response) :text)))
-			       ;; Done expunging, task finished.
-			       (fsm-send fsm (list :task-finished task))))))))))
-		 (list
-		  (list 1 "FETCH"
-			(lambda (one-fetch-response)
-			  ;; Remember which UIDs we've seen FETCH
-			  ;; responses for.
-			  (pcase one-fetch-response
-			    (`(,_seq "FETCH" ,msg-att)
-			     (let* ((uid-entry (member "UID" msg-att))
-				    (uid (cadr uid-entry)))
-			       (when uid
-				 (push (string-to-number uid) returned-uids)))))
-			  (fsm-send fsm (list :early-fetch-response
-					      mailbox
-					      one-fetch-response
-					      mailbox-uidvalidity))))))))
-	    flag-change-uids)))))
+     (bic--apply-pending-flags fsm state-data task mailbox))
     (`(,mailbox :sync-mailbox . ,_options)
      ;; At this point, we should have selected the mailbox already.
      (cl-assert (string= mailbox (plist-get state-data :selected)))
@@ -1696,6 +1532,176 @@ file and return t."
      (bic-command (plist-get state-data :connection) "LOGOUT" #'ignore))
     (_
      (warn "Unknown task %S" task))))
+
+(defun bic--apply-pending-flags (fsm state-data task mailbox)
+  ;; At this point, we should have selected the mailbox already.
+  (cl-assert (string= mailbox (plist-get state-data :selected)))
+  (let ((pending-flags-file
+	 (expand-file-name "pending-flags" (bic--mailbox-dir state-data mailbox)))
+	(mailbox-uidvalidity
+	 (plist-get (cdr (assoc mailbox
+				(plist-get state-data :mailboxes)))
+		    :uidvalidity))
+	(flag-change-uids (make-hash-table :test 'equal))
+	(discarded 0)
+	file-offset)
+    ;; Find sets of messages that have identical sets of flags
+    ;; applied, to minimise the number of commands we need to send.
+    (when (file-exists-p pending-flags-file)
+      (with-temp-buffer
+	(insert-file-contents-literally pending-flags-file)
+	(goto-char (point-min))
+	(while (search-forward-regexp
+		(concat "^\\([0-9]+\\)-\\([0-9]+\\)\\([+-]\\)\\(.*\\)$")
+		nil t)
+	  (let* ((uidvalidity (match-string 1))
+		 (uid (match-string 2))
+		 (add-remove (match-string 3))
+		 (flag (match-string 4))
+		 (opposite (car (remove add-remove '("+" "-")))))
+	    (if (string= uidvalidity mailbox-uidvalidity)
+		;; The pending flags file may contain an
+		;; instruction to set a flag for a message and then
+		;; clear it, or vice versa.  Ensure that we only
+		;; apply the last such instruction.
+		(let* ((opposite-key (cons opposite flag))
+		       (opposite-uids (gethash opposite-key flag-change-uids)))
+		  (when (member uid opposite-uids)
+		    (setq opposite-uids (delete uid opposite-uids))
+		    (if (null opposite-uids)
+			(remhash opposite-key flag-change-uids)
+		      (puthash opposite-key
+			       opposite-uids
+			       flag-change-uids)))
+		  (push uid (gethash (cons add-remove flag) flag-change-uids)))
+	      (cl-incf discarded))))
+	(setq file-offset (point))))
+    (unless (zerop discarded)
+      (warn "Discarding %d pending flag changes for %s"
+	    discarded mailbox))
+    (let ((c (plist-get state-data :connection))
+	  (remaining-entries-count (hash-table-count flag-change-uids))
+	  (all-successful t))
+      (if (zerop remaining-entries-count)
+	  ;; Nothing to do.
+	  (fsm-send fsm (list :task-finished task))
+	(maphash
+	 (lambda (add-remove-flag uids)
+	   (let ((add-remove (car add-remove-flag))
+		 (flag (cdr add-remove-flag))
+		 (ranges
+		  (gnus-compress-sequence
+		   (sort (mapcar 'string-to-number uids) '<)
+		   t))
+		 (returned-uids nil))
+	     ;; On a 32-bit Emacs, ranges may contain floating point
+	     ;; numbers - but they're exact enough to represent 32-bit
+	     ;; integers.
+	     (bic-command
+	      c
+	      (concat "UID STORE " (bic-format-ranges ranges) " "
+		      add-remove "FLAGS ("
+		      ;; No need to quote flags; they should be atoms.
+		      flag ")")
+	      (lambda (store-response)
+		;; XXX: check additional responses
+		(cl-decf remaining-entries-count)
+		(unless (eq (car store-response) :ok)
+		  (warn "Couldn't change flags in %s: %s"
+			mailbox
+			(plist-get (cl-second store-response) :text))
+		  ;; Ensure we don't clear the pending flags file
+		  (setq all-successful nil))
+		;; All completed?  If so, clear pending flags file
+		;; up to the point where we read the last entry -
+		;; but keep it if there was an error.
+		(when (zerop remaining-entries-count)
+		  (when all-successful
+		    (with-temp-buffer
+		      (insert-file-contents-literally pending-flags-file)
+		      (write-region file-offset (point-max) pending-flags-file
+				    nil :silent))
+
+		    ;; If we didn't get a FETCH response for some of
+		    ;; the messages, perhaps they have already been
+		    ;; deleted.  Let's do a SEARCH for those UIDs just
+		    ;; to be sure, and consider those we don't get
+		    ;; back to have been deleted.
+		    (let ((missing-uids (gnus-remove-from-range ranges returned-uids)))
+		      (when missing-uids
+			(bic-command
+			 c
+			 (concat "UID SEARCH UID "
+				 (bic-format-ranges missing-uids))
+			 (lambda (search-response)
+			   (pcase search-response
+			     (`(:ok ,_ ,search-data)
+			      (let* ((search-results
+				      (mapcar #'string-to-number
+					      (cdr (assoc "SEARCH" search-data))))
+				     (still-missing (gnus-remove-from-range
+						     missing-uids
+						     search-results)))
+				(bic--messages-expunged
+				 state-data mailbox
+				 (mapcar (lambda (uid)
+					   (concat mailbox-uidvalidity "-"
+						   (bic-number-to-string uid)))
+					 still-missing))))))
+			 '((0 "SEARCH" :keep)))))
+
+		    ;; If we added the \Deleted flag, also expunge:
+		    (pcase (gethash '("+" . "\\Deleted") flag-change-uids)
+		      (`nil
+		       ;; Nothing to expunge, task finished.
+		       (fsm-send fsm (list :task-finished task)))
+		      (deleted-uids
+		       (let ((expunge-command
+			      (if (bic-connection--has-capability "UIDPLUS" c)
+				  ;; We can use UID EXPUNGE to expunge
+				  ;; only the affected messages.
+				  (concat
+				   "UID EXPUNGE "
+				   (bic-format-ranges
+				    (gnus-compress-sequence
+				     (sort (mapcar #'string-to-number deleted-uids)
+					   #'<)
+				     t)))
+				;; The server doesn't support UIDPLUS.
+				;; Let's just expunge everything
+				;; that's marked \Deleted, like Gnus
+				;; does.
+				"EXPUNGE")))
+			 (bic-command
+			  c expunge-command
+			  (lambda (expunge-response)
+			    (let ((response-lines (cl-third expunge-response)))
+			      (when response-lines
+				;; TODO: handle
+				(warn "Unhandled responses to expunge request: %s"
+				      response-lines)))
+			    (unless (eq (car expunge-response) :ok)
+			      (warn "Couldn't expunge messages in %s: %s"
+				    mailbox
+				    (plist-get (cl-second expunge-response) :text)))
+			    ;; Done expunging, task finished.
+			    (fsm-send fsm (list :task-finished task))))))))))
+	      (list
+	       (list 1 "FETCH"
+		     (lambda (one-fetch-response)
+		       ;; Remember which UIDs we've seen FETCH
+		       ;; responses for.
+		       (pcase one-fetch-response
+			 (`(,_seq "FETCH" ,msg-att)
+			  (let* ((uid-entry (member "UID" msg-att))
+				 (uid (cadr uid-entry)))
+			    (when uid
+			      (push (string-to-number uid) returned-uids)))))
+		       (fsm-send fsm (list :early-fetch-response
+					   mailbox
+					   one-fetch-response
+					   mailbox-uidvalidity))))))))
+	 flag-change-uids)))))
 
 (defun bic--interesting-status-items (c)
   (concat "MESSAGES UIDNEXT UNSEEN UIDVALIDITY"
@@ -1844,7 +1850,7 @@ file and return t."
     (setq numeric-uids (avl-tree-flatten uid-tree))
     ;; We can skip requesting flags for already downloaded messages
     ;; if there aren't any downloaded messages, or if the server
-    ;; supports CONDSTORE, and the MODSEQ values match.
+    ;; supports CONDSTORE and the MODSEQ values match.
     (when (and (not (zerop (hash-table-count overview-table)))
 	       (or (not (bic-connection--has-capability "CONDSTORE" connection))
 		   (null server-modseq)
