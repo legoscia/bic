@@ -88,6 +88,12 @@ from `bic-account-mailbox-table'.")
 
 (defvar-local bic--dir nil)
 
+(defconst bic--pending-flags-prefixes '("+" "-")
+  "Possible markers in pending flags files.")
+
+(defconst bic--pending-flags-prefixes-regexp
+  (regexp-opt bic--pending-flags-prefixes))
+
 ;;;###autoload
 (defun bic (&optional new-account)
   "Start BIC.
@@ -2169,7 +2175,9 @@ file and return t."
 	    (insert-file-contents-literally pending-flags-file)
 	    (goto-char (point-min))
 	    (while (search-forward-regexp
-		    (concat "^\\([0-9]+-[0-9]+\\)\\([+-]\\)\\(.*\\)$")
+		    (concat "^\\([0-9]+-[0-9]+\\)\\("
+			    bic--pending-flags-prefixes-regexp
+			    "\\)\\(.*\\)$")
 		    nil t)
 	      (let* ((full-uid (match-string 1))
 		     (add-remove (match-string 2))
@@ -2178,7 +2186,8 @@ file and return t."
 		     (new-flags
 		      (pcase add-remove
 			("+" (cl-union existing-flags (list flag) :test 'string=))
-			("-" (remove flag existing-flags)))))
+			("-" (remove flag existing-flags))
+			(_   existing-flags))))
 		(puthash full-uid (cl-adjoin :pending new-flags) flags-table)))))))
     flags-table))
 
