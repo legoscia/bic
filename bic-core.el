@@ -717,7 +717,6 @@ For EARLY-CALLBACKS, see `bic-command'."
 (defun bic--negotiate-tls (state-data)
   (gnutls-negotiate :process (plist-get state-data :proc)
 		    :hostname (plist-get state-data :server)
-		    :verify-hostname-error (not bic-ignore-tls-errors)
 		    :verify-error (not bic-ignore-tls-errors)))
 
 (defvar-local bic--unread-start-marker nil)
