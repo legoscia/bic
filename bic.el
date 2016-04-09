@@ -449,18 +449,13 @@ ACCOUNT is a string of the form \"username@server\"."
   (let ((our-connection (plist-get state-data :connection)))
     (pcase event
       (`((:disconnected ,keyword ,reason) ,(pred (eq our-connection)))
-       (unless (plist-get state-data :ever-connected)
-	 (message "Initial connection to %s@%s failed: %s (%s)"
-		  (plist-get state-data :username)
-		  (plist-get state-data :server)
-		  reason
-		  keyword))
+       ;; We used to display a message here, but that can be rather
+       ;; annoying if you're starting BIC without a network
+       ;; connection.  Just check the mailbox tree view to see if
+       ;; you're connected or not.
        (list :disconnected state-data))
       (:timeout
-       (unless (plist-get state-data :ever-connected)
-	 (message "Initial connection to %s@%s timed out silently"
-		  (plist-get state-data :username)
-		  (plist-get state-data :server)))
+       ;; Ditto.
        (fsm-send our-connection :stop)
        (plist-put state-data :connection nil)
        (list :disconnected state-data))
@@ -486,7 +481,6 @@ ACCOUNT is a string of the form \"username@server\"."
 (define-enter-state bic-account :connected
   (fsm state-data)
   (bic--update-account-state (plist-get state-data :address) :connected)
-  (plist-put state-data :ever-connected t)
   (plist-put state-data :selected nil)
   (plist-put state-data :selecting nil)
   ;; Find pending flag changes
