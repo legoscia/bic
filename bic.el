@@ -2324,9 +2324,18 @@ about."
 
 (defun bic--read-mailbox (prompt account require-match)
   "Read the name of a mailbox for ACCOUNT."
-  (let ((mailboxes (bic--directory-directories (expand-file-name account bic-data-directory) "[^.]")))
-    (completing-read prompt (mapcar #'bic--unsanitize-mailbox-name mailboxes)
-		     nil require-match)))
+  ;; Present the "real" name for completion etc, and return the UTF-7
+  ;; encoded name that's used in IMAP commands.
+  (let* ((mailboxes (bic--directory-directories (expand-file-name account bic-data-directory) "[^.]"))
+	 (decoded-and-utf7
+	  (mapcar
+	   (lambda (mailbox-dir-name)
+	     (let ((utf7-name (bic--unsanitize-mailbox-name mailbox-dir-name)))
+	       (cons (utf7-decode utf7-name t) utf7-name)))
+	   mailboxes))
+	 (selected
+	  (completing-read prompt decoded-and-utf7 nil require-match)))
+    (cdr (assoc selected decoded-and-utf7))))
 
 (provide 'bic)
 ;;; bic.el ends here

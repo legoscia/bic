@@ -71,7 +71,7 @@
    (let* ((account (bic--read-existing-account "IMAP account: " t))
 	  (mailbox (bic--read-mailbox "Mailbox: " account t)))
      (list account mailbox)))
-  (let ((buffer-name (concat mailbox "-" account)))
+  (let ((buffer-name (concat (utf7-decode mailbox t) "-" account)))
     (with-current-buffer (get-buffer-create buffer-name)
       (if (derived-mode-p 'bic-mailbox-mode)
 	  ;; If we already have a mailbox buffer for this mailbox,
@@ -85,7 +85,7 @@
 (defun bic-mailbox--find-buffer (account mailbox)
   "Return the buffer viewing MAILBOX for ACCOUNT.
 If there is no such buffer, return nil."
-  (get-buffer (concat mailbox "-" account)))
+  (get-buffer (concat (utf7-decode mailbox t) "-" account)))
 
 (defvar bic-mailbox-mode-map
   (let ((map (make-sparse-keymap)))
@@ -108,7 +108,8 @@ If there is no such buffer, return nil."
 (define-derived-mode bic-mailbox-mode special-mode "BIC mailbox"
   "Major mode for IMAP mailboxes accessed by `bic'."
   (setq header-line-format
-	'(" " bic--current-account " " bic--current-mailbox
+	'(" " bic--current-account
+	  " " (:eval (utf7-decode bic--current-mailbox t))
 	  (:eval
 	   (let* ((mailbox-table
 		   (gethash bic--current-account bic-account-mailbox-table))

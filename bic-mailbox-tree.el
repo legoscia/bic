@@ -281,7 +281,7 @@ partial sync."
 			    'bic-mailbox-tree-mailbox-partial-sync)
 			   (_
 			    'bic-mailbox-tree-mailbox-unsubscribed))
-	    mailbox-name))))
+	    (utf7-decode mailbox-name t)))))
      mailboxes)))
 
 (defun bic-mailbox-tree--update-mailbox-state (account _mailbox _state)
