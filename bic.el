@@ -1510,17 +1510,20 @@ file and return t."
 	 (let* ((interesting-mailboxes
 		 (cl-remove-if-not #'bic--infer-sync-level (plist-get state-data :mailboxes)))
 		(remaining (length interesting-mailboxes)))
-	   (dolist (mailbox-data interesting-mailboxes)
-	     (when (bic--infer-sync-level mailbox-data)
-	       (bic-command
-		c
-		(concat "STATUS " (bic-quote-string (car mailbox-data))
-			" ("
-			(bic--interesting-status-items c)
-			")")
-		(lambda (_response)
-		  (when (zerop (cl-decf remaining))
-		    (fsm-send fsm (list :task-finished task)))))))))))
+	   ;; If there are no "interesting" mailboxes, we're done.
+	   (if (zerop remaining)
+	       (fsm-send fsm (list :task-finished task))
+	     (dolist (mailbox-data interesting-mailboxes)
+	       (when (bic--infer-sync-level mailbox-data)
+		 (bic-command
+		  c
+		  (concat "STATUS " (bic-quote-string (car mailbox-data))
+			  " ("
+			  (bic--interesting-status-items c)
+			  ")")
+		  (lambda (_response)
+		    (when (zerop (cl-decf remaining))
+		      (fsm-send fsm (list :task-finished task))))))))))))
     (`(,_ :logout)
      ;; No need for a callback - this is the last task.
      (bic-command (plist-get state-data :connection) "LOGOUT" #'ignore))
