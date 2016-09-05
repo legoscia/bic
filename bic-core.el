@@ -524,8 +524,18 @@ omitting the leading \"*\"."
 	 (let ((secret (plist-get found :secret))
 	       (save-function (plist-get found :save-function)))
 	   (plist-put state-data :password-save-function save-function)
+	   ;; According to the `auth-source-search' documentation, the
+	   ;; return value for :secret might be a function, which
+	   ;; should be called to return the value.  However, it turns
+	   ;; out that sometimes that function returns another
+	   ;; function.
+	   (when (functionp secret)
+	     (setq secret (funcall secret)))
+	   (when (functionp secret)
+	     (setq secret (funcall secret)))
+	   (cl-assert (stringp secret) t)
 	   ;; Copy the password, as sasl.el wants to erase it.
-	   (copy-sequence (if (functionp secret) (funcall secret) secret))))
+	   (copy-sequence secret)))
 	(other
 	 (throw :bic-sasl-abort (cons :unexpected other)))))))
 
