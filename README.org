@@ -22,20 +22,18 @@ below.
 
 ** Requirements
 
-BIC requires *Emacs 25*, nothing less.  At the time of this writing,
-Emacs 25 hasn't been released yet, so you'll need to use an Emacs
-built from the development tree.  Such an Emacs will identify itself
-as 25.0.50.
+BIC requires *Emacs 25*, nothing less.  Emacs 25.1 was released on
+2016-09-17.
+
+BIC also requires the package [[https://elpa.gnu.org/packages/fsm.html][fsm from GNU ELPA]] to be installed.
 
 BIC also requires a recent version of [[http://emacs-jabber.sourceforge.net][jabber.el]] to be installed.  The
 easiest way to satisfy this is to install the =jabber= package from
-[[http://melpa.milkbox.net/][MELPA]].  Strictly speaking, it only requires =fsm.el= and =srv.el=,
-which should probably be turned into independent libraries.
+[[http://melpa.milkbox.net/][MELPA]].  Strictly speaking, it only requires =srv.el=, which should
+probably be turned into an independent library.
 
-If you're using Emacs on Windows, make sure that your Emacs contains
-commit d133cf8 (2015-03-27).  This commit added support for
-non-blocking connections on Windows.  BIC has not been tested on
-Windows, so any reports, positive or negative, are very welcome.
+BIC has not been tested on Windows, so any reports, positive or
+negative, are very welcome.
 
 ** How to use
 
@@ -93,6 +91,12 @@ if you want.
   lead to the user interface being blocked while BIC tries to
   reconnect to the server.  There was
   [[https://lists.gnu.org/archive/html/emacs-devel/2015-02/msg00830.html][a thread about this on emacs-devel]], and [[https://lists.gnu.org/archive/html/emacs-devel/2016-01/msg01348.html][another one]].
+
+  For GNU/Linux, support for asynchronous DNS resolution is in the
+  Emacs =master= branch, and it will be present in a future release.
+
+  For OS X, asynchronous DNS is not yet supported.  See
+  [[https://lists.gnu.org/archive/html/emacs-devel/2016-05/msg00526.html][this emacs-devel thread]].
 
 ** Troubleshooting
 
