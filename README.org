@@ -97,6 +97,9 @@ if you want.
 
   For OS X, asynchronous DNS is not yet supported.  See
   [[https://lists.gnu.org/archive/html/emacs-devel/2016-05/msg00526.html][this emacs-devel thread]].
+- While Emacs supports making GnuTLS perform TLS handshakes
+  asynchronously, BIC somehow doesn't manage to make use of that.
+  Need to investigate.
 
 ** Troubleshooting
 
