@@ -82,6 +82,11 @@ from `bic-account-mailbox-table'.")
 (defvar bic-reconnect-interval 5
   "Attempt to reconnect after this many seconds.")
 
+(defvar bic-command-timeout 30
+  "Time in seconds allowed for server to respond to commands.
+If no data has been received during this time, the connection is
+considered dead.")
+
 (defvar-local bic--current-account nil)
 
 (defvar-local bic--current-mailbox nil)
@@ -702,6 +707,7 @@ ACCOUNT is a string of the form \"username@server\"."
 	 (warn "Task %S finished while doing task %S"
 	       task (plist-get state-data :current-task))
        (plist-put state-data :current-task nil)
+       (bic--cancel-command-timeout-timer state-data)
        (bic--maybe-next-task fsm state-data))
      (list :connected state-data))
     (`(:flags ,mailbox ,full-uid ,flags-to-add ,flags-to-remove)
@@ -756,6 +762,28 @@ ACCOUNT is a string of the form \"username@server\"."
 	(plist-put state-data :current-task nil)))
      (bic--maybe-next-task fsm state-data)
      (list :connected state-data))
+    (`(:command-timeout ,command-timeout-gensym ,time)
+     (cond
+      ((not (eq command-timeout-gensym (plist-get state-data :command-timeout-gensym)))
+       ;; This timeout event doesn't correspond to the command we're
+       ;; currently executing.  Ignore it.
+       (list :connected state-data))
+      ((time-less-p time
+		    (bic-connection--latest-received (plist-get state-data :connection)))
+       ;; The connection has received data since this timer was
+       ;; created, so we know for sure that it was alive not long ago.
+       ;; Start a new timer.
+       (bic--start-command-timeout-timer fsm state-data)
+       (list :connected state-data))
+      (t
+       ;; We've sent a command to the server, and waited
+       ;; `bic-command-timeout' seconds, but we haven't received a
+       ;; single byte from the server.  Probably the connection is
+       ;; dead without the OS telling us that.
+       (message "Timeout while waiting for data; connection for %s considered lost"
+		(plist-get state-data :address))
+       (fsm-send (plist-get state-data :connection) :stop)
+       (list :disconnected state-data))))
     (`(:ensure-up-to-date ,mailbox . ,options)
      (bic--queue-task-if-new
       state-data
@@ -1380,6 +1408,8 @@ file and return t."
   "Issue a SELECT command for MAILBOX, and send response to FSM."
   (let ((c (plist-get state-data :connection)))
     (plist-put state-data :selecting mailbox)
+    ;; Start a timer, so that we detect that the connection is dead.
+    (bic--start-command-timeout-timer fsm state-data)
     (bic-command
      c
      (concat "SELECT " (bic-quote-string mailbox)
@@ -1393,7 +1423,38 @@ file and return t."
        (1 "EXISTS" :keep)
        (1 "RECENT" ignore)))))
 
+(defun bic--start-command-timeout-timer (fsm state-data)
+  "Start a new command timeout timer.
+Cancel existing timer, if any.
+
+If no data has been received for `bic-command-timeout' seconds,
+consider the connection dead."
+  (let* ((command-timeout-gensym (cl-gensym "command-timeout-"))
+	 (time (current-time))
+	 (timer (run-with-timer
+		 bic-command-timeout nil
+		 (lambda ()
+		   ;; Give this connection a chance to have its data
+		   ;; processed, in case some other connection has
+		   ;; been hogging all the attention.
+		   (bic-connection--accept-output
+		    (plist-get state-data :connection))
+		   (fsm-send fsm (list :command-timeout
+				       command-timeout-gensym
+				       time))))))
+    (bic--cancel-command-timeout-timer state-data)
+    (plist-put state-data :command-timeout-gensym command-timeout-gensym)
+    (plist-put state-data :command-timeout-timer timer)))
+
+(defun bic--cancel-command-timeout-timer (state-data)
+  (let ((previous-timer (plist-get state-data :command-timeout-timer)))
+    (when (timerp previous-timer)
+      (cancel-timer previous-timer))
+    (plist-put state-data :command-timeout-gensym nil)))
+
 (defun bic--do-task (fsm state-data task)
+  ;; No matter what we do, setting a timeout for it is a good idea.
+  (bic--start-command-timeout-timer fsm state-data)
   (pcase task
     (`(,mailbox :pending-flags)
      (bic--apply-pending-flags fsm state-data task mailbox))
@@ -1710,6 +1771,9 @@ file and return t."
 	 (timer (run-with-timer (* 29 60) nil
 				(lambda ()
 				  (fsm-send fsm (list :idle-timeout idle-gensym))))))
+    ;; In idle mode, we use an idle timer, so cancel any existing
+    ;; command timer.
+    (bic--cancel-command-timeout-timer state-data)
     (plist-put state-data :current-task (list :idle idle-gensym timer))
     (bic-command
      (plist-get state-data :connection)

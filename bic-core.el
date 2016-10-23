@@ -738,6 +738,7 @@ For EARLY-CALLBACKS, see `bic-command'."
 (defvar-local bic--line-acc nil)
 
 (cl-defun bic--filter (process data fsm &key sensitive)
+  (process-put process :latest-received (current-time))
   (with-current-buffer (process-buffer process)
     (unless bic--unread-start-marker
       (setq bic--unread-start-marker (point-min-marker)))
@@ -1328,6 +1329,23 @@ Authentication methods cannot be queried."
   (and (member capability (plist-get (fsm-get-state-data connection)
 				     :capabilities))
        (not (member capability bic-ignored-capabilities))))
+
+(defun bic-connection--latest-received (connection)
+  "Return the timestamp when CONNECTION last received data.
+The timestamp is returned in the same format as `current-time'.
+May return nil."
+  (let ((proc (plist-get (fsm-get-state-data connection) :proc)))
+    (when (processp proc)
+      (process-get proc :latest-received))))
+
+(defun bic-connection--accept-output (connection)
+  "Attempt to process incoming data from CONNECTION.
+Return non-nil if any output was received."
+  (let ((proc (plist-get (fsm-get-state-data connection) :proc)))
+    (when (processp proc)
+      ;; According to the docstring, this should make Emacs read
+      ;; output for this process only, without running any timers.
+      (accept-process-output proc 0.01 nil 0))))
 
 (provide 'bic-core)
 ;;; bic-core.el ends here
