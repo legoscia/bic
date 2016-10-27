@@ -970,13 +970,13 @@ It also includes underscore, which is used as an escape character.")
      mailboxes)
     ;; Modify state-data in place:
     (plist-put state-data :mailboxes mailboxes)
+    (bic--store-initial-mailbox-list (plist-get state-data :address) mailboxes)
     ;; Take STATUS responses into account
     (dolist (status-response status-responses)
       (bic--handle-status-response
        fsm state-data (cl-second status-response) (cl-third status-response)
        ;; Don't sync just yet.
        :queue-sync-tasks nil))
-    (bic--store-initial-mailbox-list (plist-get state-data :address) mailboxes)
     (if subscription-return
 	;; If we have subscription info, we can sync mailboxes.
 	(if status-return
