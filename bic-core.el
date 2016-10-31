@@ -115,6 +115,7 @@ omitting the leading \"*\"."
 		     :coding 'binary
 		     :nowait t
 		     :keepalive t
+		     :noquery t
 		     :filter (fsm-make-filter fsm)
 		     :sentinel (fsm-make-sentinel fsm))))
 	  (buffer-disable-undo buffer)
