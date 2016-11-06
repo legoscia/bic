@@ -1150,6 +1150,12 @@ It also includes underscore, which is used as an escape character.")
 	  (lambda (mailbox-data)
 	    (bic--mailbox-sync-task-maybe state-data mailbox-data))
 	  (plist-get state-data :mailboxes))))
+    ;; If INBOX is one of the mailboxes that needs syncing, do it
+    ;; first.
+    (let ((inbox-task (assoc "INBOX" download-messages-tasks)))
+      (when inbox-task
+	(setq download-messages-tasks
+	      (cons inbox-task (delq inbox-task download-messages-tasks)))))
     (plist-put state-data :tasks
 	       (append (plist-get state-data :tasks)
 		       download-messages-tasks))
