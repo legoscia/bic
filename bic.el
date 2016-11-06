@@ -1316,7 +1316,8 @@ file and return t."
 		    ;; TODO: do something sensible here
 		    (warn "UIDVALIDITY mismatch: %s vs %s"
 			  (buffer-string) uidvalidity)))
-	      (message "Fresh UIDVALIDITY value: %S" uidvalidity-entry)
+	      ;; We haven't seen any UIDVALIDITY value for this
+	      ;; mailbox before, so write it to file.
 	      (bic--write-string-to-file uidvalidity uidvalidity-file))
 
 	    (if (null exists-entry)
