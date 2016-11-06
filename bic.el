@@ -109,7 +109,9 @@ Otherwise, start BIC for all known addresses."
   (let ((accounts (and (file-directory-p bic-data-directory)
 		       (directory-files bic-data-directory nil "@"))))
     (if (or new-account (null accounts))
-	(call-interactively #'bic-add-account)
+	(progn
+	  (call-interactively #'bic-add-account)
+	  (bic-mailbox-tree))
       (mapc #'bic-add-account
 	    (cl-remove-if #'bic--find-account accounts))
       (bic-mailbox-tree))))
