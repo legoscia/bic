@@ -65,10 +65,6 @@
 	   link))))))
 
 ;;;###autoload
-(with-eval-after-load "org"
-  (add-to-list 'org-store-link-functions 'bic-org-store-link))
-
-;;;###autoload
 (defun bic-org-follow (link)
   (unless (string-match "\\`\\([^:]+\\):\\([^:]+\\):\\([0-9-]+\\)\\'" link)
     (error "Invalid BIC link %S" link))
@@ -81,7 +77,14 @@
 
 ;;;###autoload
 (with-eval-after-load "org"
-  (org-add-link-type "bic" 'bic-org-follow))
+  ;; `org-link-set-parameters' is new in Org 9.0
+  (if (fboundp 'org-link-set-parameters)
+      (org-link-set-parameters
+       "bic"
+       :follow 'bic-org-follow
+       :store 'bic-org-store-link)
+    (org-add-link-type "bic" 'bic-org-follow)
+    (add-to-list 'org-store-link-functions 'bic-org-store-link)))
 
 (provide 'bic-org)
 ;;; bic-org.el ends here
