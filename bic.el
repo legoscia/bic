@@ -5,7 +5,7 @@
 ;; Author: Magnus Henoch <magnus.henoch@gmail.com>
 ;; Keywords: mail
 ;; Package-Version: 0.0.1
-;; Package-Requires: ((emacs "25"))
+;; Package-Requires: ((emacs "25") (fsm "0.2.1") (jabber "0.8.92"))
 ;; URL: https://github.com/legoscia/bic
 
 ;; This program is free software; you can redistribute it and/or modify
