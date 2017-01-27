@@ -6,6 +6,7 @@
 ;; Keywords: mail
 ;; Package-Version: 0.0.1
 ;; Package-Requires: ((emacs "25"))
+;; URL: https://github.com/legoscia/bic
 
 ;; This program is free software; you can redistribute it and/or modify
 ;; it under the terms of the GNU General Public License as published by
@@ -22,7 +23,28 @@
 
 ;;; Commentary:
 
-;; 
+;; BIC is the Best IMAP Client.  No configuration necessary: just type
+;; M-x bic to get started.
+;;
+;; Key bindings are similar to Gnus.  Type C-h m to see available key
+;; bindings in the current buffer.  (There are three types of buffers:
+;; the mailbox tree buffer, mailbox buffers, and the message buffer.)
+;;
+;; BIC is built on the following principles:
+;;
+;; - asynchronicity
+;; - minimal configuration
+;; - offline is online
+;; - osmosis
+;;
+;; For more information, including a list of known problems, see the
+;; README.org file.  If you are viewing this text from within the
+;; package system, you can find the README file at this URL:
+;; https://github.com/legoscia/bic#readme
+;;
+;; Experience reports, bug reports and feature requests are very
+;; welcome!  Please submit them as issues here:
+;; https://github.com/legoscia/bic/issues
 
 ;;; Code:
 
