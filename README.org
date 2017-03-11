@@ -1,3 +1,5 @@
+#+STARTUP: showall
+
 * BIC, the Best IMAP Client
 
 BIC is an IMAP client for Emacs.  It is built on the following
@@ -19,6 +21,32 @@ principles:
 
 That said, it is still a work in progress.  See "Known problems"
 below.
+
+** Who, if not you?  When, if not now?
+
+Of course, there is no such thing as a "Best IMAP Client"; that
+depends on far too many factors.  BIC is a snapshot in time and space:
+it's the intersection of what is possible in Emacs 25.1, what is
+possible considering the principles I stated above, and what I had the
+time and energy to implement.
+
+In a way, BIC is defined more by what it isn't than by what it is: it
+isn't Gnus, which blocks when communicating with the server, and it
+isn't mu4e, which requires =mu= and =offlineimap= to be installed.
+
+So what will BIC become in the future?  Hard to tell.  It has basic
+functionality, though many features you'd expect in an email client
+are missing (see "Known problems").  I may or may not have the time
+and energy to "complete" the work.  Maybe the principles BIC is based
+on will be irrelevant: will the IMAP protocol still be used?  will
+reading email in Emacs still be a desirable thing?  will the concept
+of email change beyond recognition?
+
+What I want to say with this is that the future of BIC is in your
+hands.  Do you think that BIC is useful or meaningful, that the basic
+ideas and concepts are helpful?  If so, maybe you are the chosen one
+to make BIC better.  [[https://github.com/legoscia/bic/issues][Create an issue]] on GitHub with your thoughts,
+ideas and questions.
 
 ** Requirements
 
