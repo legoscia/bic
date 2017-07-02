@@ -494,7 +494,7 @@ omitting the leading \"*\"."
      (list :sasl-auth state-data))))
 
 (defun bic--read-passphrase-function (state-data)
-  (lambda (prompt)
+  (lambda (_prompt)
     (let ((auth-source-result
 	   (with-timeout (60 :timeout)
 	     (or
@@ -763,13 +763,13 @@ For EARLY-CALLBACKS, see `bic-command'."
 		    (and bic--literal-start-marker
 			 (marker-position bic--literal-start-marker)))))
 	  (let ((previous (current-progress)))
-	    (while (bic--read-input fsm process sensitive)
+	    (while (bic--read-input fsm sensitive)
 	      (when (equal previous (current-progress))
 		(error "no progress"))
 	      (setq previous (current-progress)))))
       (continue-process process))))
 
-(defun bic--read-input (fsm process sensitive)
+(defun bic--read-input (fsm sensitive)
   "Read what the server sent, and send as :line messages to FSM.
 Keep calling this function until it returns nil."
   (cond
