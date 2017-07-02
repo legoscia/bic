@@ -19,7 +19,11 @@
 
 ;;; Commentary:
 
-;; 
+;; Functions for storing and following links to email messages in
+;; org-mode.  There should be no need to call the functions in this
+;; file directly; `org-store-link' should pick up the correct link
+;; when invoked from a message or mailbox buffer, and
+;; `org-open-at-point' should handle BIC links.
 
 ;;; Code:
 
@@ -27,6 +31,8 @@
 
 ;;;###autoload
 (defun bic-org-store-link ()
+  "Store a link to an email.
+This function is called by `org-store-link'."
   (let ((full-uid
 	 (cond
 	  ((derived-mode-p 'bic-message-mode)
@@ -66,6 +72,8 @@
 
 ;;;###autoload
 (defun bic-org-follow (link)
+  "Open the email pointed to by LINK.
+This function is called by `org-open-at-point'."
   (unless (string-match "\\`\\([^:]+\\):\\([^:]+\\):\\([0-9-]+\\)\\'" link)
     (error "Invalid BIC link %S" link))
   (let ((account (match-string 1 link))
