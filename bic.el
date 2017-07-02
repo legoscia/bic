@@ -477,7 +477,7 @@ ACCOUNT is a string of the form \"username@server\"."
   (_fsm state-data event callback)
   (let ((our-connection (plist-get state-data :connection)))
     (pcase event
-      (`((:disconnected ,keyword ,reason) ,(pred (eq our-connection)))
+      (`((:disconnected ,_keyword ,_reason) ,(pred (eq our-connection)))
        ;; We used to display a message here, but that can be rather
        ;; annoying if you're starting BIC without a network
        ;; connection.  Just check the mailbox tree view to see if
@@ -826,7 +826,7 @@ ACCOUNT is a string of the form \"username@server\"."
      (plist-put state-data :tasks (list (list :any-mailbox :logout)))
      (bic--maybe-next-task fsm state-data)
      (list :connected state-data))
-    (`((:disconnected ,keyword ,reason) ,connection)
+    (`((:disconnected ,_keyword ,_reason) ,connection)
      (cond
       ((eq connection (plist-get state-data :connection))
        (message "Disconnected from IMAP server!")
@@ -1114,7 +1114,7 @@ It also includes underscore, which is used as an escape character.")
 	      (avl-tree-enter uid-tree (string-to-number uid))))
 	   (`("BODY" . ,other)
 	    (warn "Unexpected BODY in FETCH response: %S" other))
-	   (other
+	   (_other
 	    ;; TODO: only warn if message absent in overview?
 	    ;; (message "Missing BODY in FETCH response: %S" other)
 	    ))
@@ -1506,10 +1506,7 @@ consider the connection dead."
 	    (mailbox-plist (cdr (assoc mailbox (plist-get state-data :mailboxes))))
 	    (mailbox-uidvalidity (plist-get mailbox-plist :uidvalidity))
 	    (exists (plist-get mailbox-plist :exists))
-	    (overview-table (bic--read-overview state-data mailbox))
 	    (uid-tree (gethash mailbox (plist-get state-data :uid-tree-per-mailbox)))
-	    (dir (bic--mailbox-dir state-data mailbox))
-	    (overview-file (expand-file-name "overview" dir))
 	    ;; XXX: split list if numbers have gaps?
 	    (min (apply #'min sequence-numbers))
 	    (max (apply #'max sequence-numbers))
