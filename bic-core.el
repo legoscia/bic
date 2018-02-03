@@ -264,6 +264,10 @@ omitting the leading \"*\"."
      (bic--fail state-data :stopped "Stopped"))))
 
 (defun bic--advance-connection-state (fsm state-data capabilities)
+  "Move the connection FSM through the required states.
+Activate encryption if needed, authenticate.
+Argument STATE-DATA is the state data of FSM.
+Argument CAPABILITIES is the capabilities reported by the server."
   (cond
    ((and (not (plist-get state-data :encrypted))
 	 (not (eq (plist-get state-data :connection-type) :unencrypted)))
@@ -494,6 +498,11 @@ omitting the leading \"*\"."
      (list :sasl-auth state-data))))
 
 (defun bic--read-passphrase-function (state-data)
+  "Return a function that returns the password.
+Either find the saved password using `auth-source-search', or
+query the user.
+STATE-DATA is the state data of the connection, where we get
+the username and server name from."
   (lambda (_prompt)
     (let ((auth-source-result
 	   (with-timeout (60 :timeout)
@@ -568,7 +577,7 @@ omitting the leading \"*\"."
      (list :authenticated state-data))
 
     (`(:line ,line)
-     (bic--handle-line state-data line)
+     (bic--handle-line line state-data)
      (list :authenticated state-data))
 
     (`(:sentinel ,_process ,reason)
@@ -580,7 +589,10 @@ omitting the leading \"*\"."
     (:stop
      (bic--fail state-data :stopped "Stopped"))))
 
-(defun bic--handle-line (state-data line)
+(defun bic--handle-line (line state-data)
+  "Handle a single LINE received from the server.
+STATE-DATA is the connection state data, used to find callback
+functions for incoming responses."
   (pcase (bic--parse-line line)
     (`("*" . ,rest)
      (unless
@@ -626,7 +638,7 @@ omitting the leading \"*\"."
      (fsm-debug-output "Unexpected line: '%s'" line))))
 
 (defun bic-command (fsm command callback &optional early-callbacks)
-  "Send an IMAP command.
+  "Send an IMAP command through the connection referred to by FSM.
 COMMAND is a string containing an IMAP command minus the tag.
 
 CALLBACK is a function that takes one argument of the form
@@ -657,6 +669,7 @@ included in RESPONSE-LINES."
 
 (defun bic-uids-command (fsm prefix uid-ranges suffix callback &optional early-callbacks)
   "Send one or more IMAP commands, respecting length limits.
+The commands are sent through the connection referred to by FSM.
 The logical command to send is PREFIX, plus the uids in
 UID-RANGES, plus SUFFIX.  If the command would be longer than
 8192 octets (the limit recommended in RFC 7162), it is split into
@@ -696,6 +709,13 @@ For EARLY-CALLBACKS, see `bic-command'."
 		one-callback))))
 
 (defun bic--fail (state-data keyword reason)
+  "Go to the \"failure state\".
+The return value from this function can be returned from a
+`define-state' function.
+
+STATE-DATA is the state data of the bic-connection state machine.
+KEYWORD is a keyword indicating the failure condition.
+REASON is a string giving more information."
   (plist-put state-data :fail-keyword keyword)
   (plist-put state-data :fail-reason reason)
   (list nil state-data))
@@ -726,6 +746,8 @@ For EARLY-CALLBACKS, see `bic-command'."
   (list nil state-data))
 
 (defun bic--negotiate-tls (state-data)
+  "Negotiate a TLS connection.
+Use the connection and host name from STATE-DATA."
   (gnutls-negotiate :process (plist-get state-data :proc)
 		    :hostname (plist-get state-data :server)
 		    :verify-error (if bic-ignore-tls-errors
@@ -765,13 +787,14 @@ For EARLY-CALLBACKS, see `bic-command'."
 	  (let ((previous (current-progress)))
 	    (while (bic--read-input fsm sensitive)
 	      (when (equal previous (current-progress))
-		(error "no progress"))
+		(error "No progress"))
 	      (setq previous (current-progress)))))
       (continue-process process))))
 
 (defun bic--read-input (fsm sensitive)
   "Read what the server sent, and send as :line messages to FSM.
-Keep calling this function until it returns nil."
+Keep calling this function until it returns nil.
+Argument SENSITIVE means that this line of input should be displayed as <omitted> in the transcript buffer."
   (cond
    ((null bic--literal-start-marker)
     ;; Find complete lines, terminated by CRLF
@@ -900,7 +923,15 @@ VALUE must be greater than any marker previously issued."
 	   (not mismatch)))))
 
 (defun bic--maybe-redact-received (received-line line-acc)
-  "Hide personal data such as addresses, subjects in transcript."
+  "Hide personal data such as addresses, subjects in transcript.
+RECEIVED-LINE is the line to be redacted.
+The return value is a string where personal data has been replaced
+with \"<redacted>\", with a display property so that the actual
+text is still visible in the transcript buffer, but doesn't get
+copied along when the transcript is copied to somewhere else.
+
+LINE-ACC is a list of previously received lines for the current
+command, used to establish context for parsing the current line."
   (let ((line-so-far (reverse (cons received-line line-acc)))
 	redact-at)
     (cond
@@ -1012,6 +1043,9 @@ VALUE must be greater than any marker previously issued."
 (defvar view-no-disable-on-exit)
 
 (defun bic--transcript (fsm string)
+  "Add a line to the transcript buffer for FSM.
+STRING is the line to add.  It should start with \"S: \", \"C: \"
+or \"*** \", and end with a newline."
   (with-current-buffer (get-buffer-create (format bic-transcript-buffer (plist-get (fsm-get-state-data fsm) :name)))
     (unless (derived-mode-p 'view-mode)
       (view-mode)
@@ -1022,6 +1056,20 @@ VALUE must be greater than any marker previously issued."
 	(insert string)))))
 
 (defun bic--parse-greeting (line)
+  "Parse the greeting from the server.
+LINE is what the server sent after the connection was established,
+usually starting with \"* OK\" or \"* BYE\".
+
+Return a list of three elements:
+
+- one of the keywords :ok and :bye
+
+- a list of IMAP capabilities sent by the server.  If the server
+  didn't include capabilities in its greeting, this is an empty list.
+
+- the text in the greeting
+
+If the greeting doesn't match what we expect, signal an error."
   (pcase (bic--parse-line line)
     (`("*" ,(and (or :ok :bye) type) . ,plist)
      (if (string= "CAPABILITY" (plist-get plist :code))
@@ -1035,6 +1083,15 @@ VALUE must be greater than any marker previously issued."
 
 
 (defun bic--parse-capabilities (strings)
+  "Parse server capabilities.
+STRINGS is a list of strings, naming the capabilities advertised
+by the server.
+
+The capabilities are returned unchanged, except for those
+starting with \"AUTH=\".  The supported authentication methods
+are returned in a separate list element, whose car is the
+keyword :auth, and whose cdr is the list of authentication
+capabilities with the leading \"AUTH=\" stripped away."
   (let (capabilities auth)
     (dolist (capability strings)
       (if (string-prefix-p "AUTH=" capability)
@@ -1074,7 +1131,8 @@ VALUE must be greater than any marker previously issued."
 	  (let ((tag (match-string 1 (car line)))
 		(type (match-string 2 (car line)))
 		(rest (match-string 3 (car line))))
-	    (cons tag (bic--parse-resp-text type rest))))))))
+	    (cl-list* tag (intern (concat ":" (downcase type)))
+		      (bic--parse-resp-text rest))))))))
 
   (while line
     (cond
@@ -1126,7 +1184,11 @@ VALUE must be greater than any marker previously issued."
       (error "Expected closing `%c'" closing-parenthesis)
     (nreverse tokens)))
 
-(defun bic--parse-resp-text (type resp-text)
+(defun bic--parse-resp-text (resp-text)
+  "Parse RESP-TEXT, and return a proplist.
+The proplist always contains the key :text, for the text part of
+RESP-TEXT.  If there is a resp-text-code, return it under the key
+:code, and return its extra data item, if any, under :data."
 ;;; resp-text       = ["[" resp-text-code "]" SP] text
 ;;;
 ;;; resp-text-code  = "ALERT" /
@@ -1144,11 +1206,10 @@ VALUE must be greater than any marker previously issued."
       (let ((resp-text-code (match-string 1 resp-text))
 	    (resp-text-data (match-string 2 resp-text))
 	    (text (match-string 3 resp-text)))
-	(list (intern (concat ":" (downcase type)))
-	      :code resp-text-code
+	(list :code resp-text-code
 	      :data resp-text-data
 	      :text text))
-    (list (intern (concat ":" (downcase type))) :text resp-text)))
+    (list :text resp-text)))
 
 (defun bic--parse-quoted-string (line start)
   "Parse a quoted string in LINE, starting at START.
@@ -1278,6 +1339,9 @@ Return a list of strings."
 
 (defun bic-parse-sequence-set (sequence-set-string)
   "Parse a sequence set into ranges.
+SEQUENCE-SET-STRING is a string matching `sequence-set' in RFC
+3509.
+
 Does not handle sequence sets including \"*\"."
   (let ((start 0) (i 0)
 	(ranges nil))
@@ -1327,7 +1391,7 @@ Does not handle sequence sets including \"*\"."
       ranges-without-overlap)))
 
 (defun bic-connection--has-capability (capability connection)
-  "Return true if CONNECTION reported CAPABILITY.
+  "Return non-nil if CAPABILITY was reported by CONNECTION.
 Authentication methods cannot be queried."
   (and (member capability (plist-get (fsm-get-state-data connection)
 				     :capabilities))
