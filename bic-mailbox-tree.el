@@ -85,6 +85,7 @@
   (setq-local widget-global-map bic-mailbox-tree-mode-map))
 
 (defun bic-mailbox-tree-press-button-on-current-line (&optional event)
+  ;; checkdoc-params: (event)
   "Find button on current line and press it.
 By default, widget mode is too stingy about where the point has
 to be for the button press to count.  Let's try to do what the
@@ -136,6 +137,9 @@ partial sync."
       (bic-mailbox-set-sync-level account-name mailbox-name 'no-sync))))
 
 (defun bic--button-on-current-line (&optional predicate)
+  "Find and return a button on the current line, if any.
+If PREDICATE is non-nil, return the first button that
+satisifies PREDICATE."
   (save-excursion
     (forward-line 0)
     (let ((end (line-end-position))
@@ -165,6 +169,7 @@ partial sync."
 (defvar-local bic-mailbox-tree--widget nil)
 
 (defun bic-mailbox-tree--init ()
+  "Initialise a mailbox tree buffer."
   (unless bic-mailbox-tree--widget
     (setq bic-mailbox-tree--widget
 	  (widget-create
@@ -175,6 +180,7 @@ partial sync."
 	   :expander-p (lambda (&rest _) t)))))
 
 (defun bic-mailbox-tree--accounts (_parent)
+  "Return tree widgets for all accounts."
   (mapcar
    (lambda (fsm)
      (let ((address (plist-get (fsm-get-state-data fsm) :address)))
@@ -182,6 +188,7 @@ partial sync."
    bic-running-accounts))
 
 (defun bic-mailbox-tree--account (address)
+  "Return a tree widget for the account named ADDRESS."
   (widget-convert
    'tree-widget
    :tag (bic-mailbox-tree--account-tag address (gethash address bic-account-state-table))
@@ -190,6 +197,9 @@ partial sync."
    :expander-p (lambda (&rest _) t)))
 
 (defun bic-mailbox-tree--account-tag (address state)
+  "Return a \"tag\" for the account named ADDRESS based on its STATE.
+The tag consists of the address, followed by one of \"connected\",
+\"disconnected\" or \"deactivated\" in parentheses."
   (propertize
    (format "%s (%s)" address (substring (symbol-name state) 1))
    'face
@@ -199,6 +209,9 @@ partial sync."
      (:deactivated 'bic-mailbox-tree-account-deactivated))))
 
 (defun bic-mailbox-tree--update-account-state (account new-state)
+  "Update the state of ACCOUNT in the mailbox tree buffer.
+NEW-STATE is a keyword, one of :connected, :disconnected or
+:deactivated."
   (let ((buffer (get-buffer "*Mailboxes*")))
     (when buffer
       (with-current-buffer buffer
@@ -231,6 +244,8 @@ partial sync."
 	    (widget-value-set bic-mailbox-tree--widget (widget-value bic-mailbox-tree--widget)))))))))
 
 (defun bic-mailbox-tree--mailboxes (parent)
+  "Return widgets for all mailboxes in an account.
+PARENT is the tree widget node for the account."
   (let* ((account-name (widget-get parent :address))
 	 (mailbox-table (gethash account-name bic-account-mailbox-table))
 	 mailboxes)
@@ -285,6 +300,10 @@ partial sync."
      mailboxes)))
 
 (defun bic-mailbox-tree--update-mailbox-state (account _mailbox _state)
+  ;; checkdoc-params: (account)
+  "Update the state of a mailbox in the mailbox tree buffer.
+This function is meant to be called from the hook
+`bic-account-mailbox-update-functions'."
   (let ((buffer (get-buffer "*Mailboxes*")))
     (when buffer
       (with-current-buffer buffer
