@@ -43,8 +43,9 @@ be queued, in order to be sent when you're online again."
   :type 'boolean)
 
 (defun bic-smtpmail--online-p ()
-  ;; Check whether at least one account whose server is not
-  ;; "localhost" is online.
+  "Are we online enough that we should try to send mail?
+Check whether at least one account whose server is not
+\"localhost\" is online."
   (let ((onlinep nil))
     (maphash
      (lambda (account state)
@@ -59,6 +60,12 @@ be queued, in order to be sent when you're online again."
 
 ;;;###autoload
 (defun bic-smtpmail--state-update (&optional _account _new-state)
+  "Update smtpmail state when going online/offline.
+If going offline, start queuing outgoing messages.
+If going online, send queued messages.
+
+This function is meant to be added to
+`bic-account-state-update-functions'."
   (when bic-smtpmail-toggle-queueing
     (pcase (cons smtpmail-queue-mail (bic-smtpmail--online-p))
       (`(nil . nil)
