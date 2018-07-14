@@ -67,6 +67,9 @@
 
 ;;;###autoload
 (defun bic-mailbox-open (account mailbox)
+  ;; checkdoc-order: nil
+  "Open MAILBOX in a mailbox buffer.
+MAILBOX is the name of a mailbox belonging to ACCOUNT."
   (interactive
    (let* ((account (bic--read-existing-account "IMAP account: " t))
 	  (mailbox (bic--read-mailbox "Mailbox: " account t)))
@@ -83,6 +86,7 @@
 
 ;;;###autoload
 (defun bic-mailbox--find-buffer (account mailbox)
+  ;; checkdoc-order: nil
   "Return the buffer viewing MAILBOX for ACCOUNT.
 If there is no such buffer, return nil."
   (get-buffer (concat (utf7-decode mailbox t) "-" account)))
@@ -127,6 +131,8 @@ If there is no such buffer, return nil."
   (setq-local truncate-lines t))
 
 (defun bic-mailbox--init (account mailbox)
+  ;; checkdoc-params: (account mailbox)
+  "Initialise a new mailbox buffer."
   (setq bic--current-account account
 	bic--current-mailbox mailbox
 	;; TODO: use bic--mailbox-dir
@@ -143,6 +149,7 @@ If there is no such buffer, return nil."
     (bic-mailbox--load-messages)))
 
 (defun bic-mailbox--load-messages ()
+  "Add list of messages to mailbox buffer."
   (let* ((uidvalidity-file (expand-file-name "uidvalidity" bic--dir))
 	 (uidvalidity
 	  (when (file-exists-p uidvalidity-file)
@@ -171,6 +178,8 @@ If there is no such buffer, return nil."
      (list :ensure-up-to-date bic--current-mailbox))))
 
 (defun bic-mailbox--pp (msg)
+  ;; checkdoc-params: (msg)
+  "Ewoc pretty-printer function for mailbox buffer."
   (let ((envelope (gethash msg bic-mailbox--hashtable))
 	(flags (gethash msg bic-mailbox--flags-table)))
     (pcase envelope
@@ -195,6 +204,7 @@ If there is no such buffer, return nil."
        (warn "Message %s not found in hash table" msg)))))
 
 (defun bic-mailbox--face-from-flags (flags)
+  "Return the font face to use for a message, based on FLAGS."
   (cond
    ((member "\\Deleted" flags)
     'bic-mailbox-deleted)
@@ -208,6 +218,20 @@ If there is no such buffer, return nil."
     'bic-mailbox-unread)))
 
 (defun bic-mailbox--format-flags (flags)
+  "Return indicators to use for a message, given FLAGS.
+The indicators consist of two characters.  First character:
+
+- If the message is marked as spam: $
+- If the message is flagged: !
+- If the message is read: R
+- If the message is recent: .
+- Otherwise, the first character is a space
+
+Second character:
+
+- If the message has been answered: A
+- If the message has been forwarded: F
+- Otherwise, the second character is a space"
   (propertize
    (format "%c%c"
 	   (cond
@@ -234,6 +258,11 @@ If there is no such buffer, return nil."
 			"none"))))
 
 (defun bic-mailbox--format-date (date)
+  "Format DATE for mailbox message listing.
+If the message was sent today, show the time as HH:MM.
+If the message was sent within the last 180 days,
+show the date as DD MMM (abbreviated month).
+Otherwise, show a numeric date as YYYY-MM-DD."
   (let ((parsed-date (ignore-errors (date-to-time date))))
     (if (null date)
 	;; cannot parse
@@ -259,6 +288,10 @@ If there is no such buffer, return nil."
 	  (format-time-string "%F" parsed-date)))))))
 
 (defun bic-mailbox--fixup-times (buffer)
+  "At midnight, update message timestamps in BUFFER.
+Any message that was showing just the time will be
+updated to show the date instead, since it's already
+from yesterday."
   (when (buffer-live-p buffer)
     (with-current-buffer buffer
       (unless (derived-mode-p 'bic-mailbox-mode)
@@ -284,6 +317,10 @@ If there is no such buffer, return nil."
 		bic-mailbox--fixup-times-timer nil))))))
 
 (defun bic-mailbox--fixup-times-maybe-start-timer ()
+  "Set timer for fixing message timestamps.
+At midnight, we change HH:MM timestamps for messages sent
+today into the format for messages sent earlier.
+See `bic-mailbox--fixup-times'."
   (unless (or
 	   ;; If there's already a timer that's set to run in the
 	   ;; future, there's no need to set a new one.
@@ -372,6 +409,7 @@ Also hide messages marked for deletion."
 	    `(:ensure-up-to-date ,bic--current-mailbox :verbose t)))
 
 (defun bic-mailbox-read-message (keep-unread)
+  ;; checkdoc-params: (keep-unread)
   "Open the message under point, and mark it as read.
 With prefix argument, don't mark message as read."
   (interactive "P")
@@ -441,12 +479,23 @@ If at the end of the message, show next unread message."
 
 ;;;###autoload
 (defun bic-mailbox--maybe-update-message (address mailbox full-uid)
+  ;; checkdoc-params: (address mailbox full-uid)
+  "Update how a certain message is displayed in its mailbox buffer.
+If there is no mailbox buffer for the mailbox in question, do nothing."
   (pcase (bic-mailbox--find-buffer address mailbox)
     ((and (pred bufferp) mailbox-buffer)
      (run-with-idle-timer
       0.1 nil 'bic-mailbox--update-message mailbox-buffer full-uid))))
 
 (defun bic-mailbox--update-message (buffer full-uid)
+  "Update the display of a message in a mailbox buffer.
+BUFFER is the buffer displaying the mailbox, and FULL-UID
+is a string containing the uidvalidity and the uid of the
+message.
+
+If the message is currently not displayed, add it to the end
+of the buffer.  If the message is displayed, call the ewoc
+pretty-printer again to update display for new flags etc."
   (with-current-buffer buffer
     (pcase (gethash full-uid bic-mailbox--ewoc-nodes-table)
       (`nil
@@ -460,6 +509,7 @@ If at the end of the message, show next unread message."
 	 (bic-mailbox--invalidate bic-mailbox--ewoc node))))))
 
 (defun bic-mailbox--invalidate (ewoc node)
+  ;; checkdoc-params: (ewoc node)
   "Like `ewoc-invalidate', but ensure point doesn't move.
 Assumes that the size of the entry won't change."
   (let ((old-point (point)))
@@ -474,12 +524,18 @@ Assumes that the size of the entry won't change."
 
 ;;;###autoload
 (defun bic-mailbox--maybe-remove-message (address mailbox full-uid)
+  ;; checkdoc-params: (address mailbox full-uid)
+  "Remove a message from its mailbox buffer.
+If there is no buffer displaying the mailbox in question, do nothing."
   (pcase (bic-mailbox--find-buffer address mailbox)
     ((and (pred bufferp) mailbox-buffer)
      (run-with-idle-timer
       0.1 nil 'bic-mailbox--remove-message mailbox-buffer full-uid))))
 
 (defun bic-mailbox--remove-message (buffer full-uid)
+  "Remove a message from BUFFER.
+FULL-UID is a string containing the uidvalidity and the uid of the
+message."
   (with-current-buffer buffer
     (pcase (gethash full-uid bic-mailbox--ewoc-nodes-table)
       (`nil
