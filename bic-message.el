@@ -122,7 +122,8 @@ and the uid of the message, separated by a hyphen."
 
 (defun bic-message-reload (&optional raw)
   "Redisplay the current message.
-With prefix argument, display the raw data of the message."
+With prefix argument (or when RAW is non-nil),
+display the raw data of the message."
   (interactive "P")
   (unless (derived-mode-p 'bic-message-mode)
     (user-error "Not in message buffer"))
@@ -194,7 +195,10 @@ If the message is marked to be deleted, undelete it."
 
 ;;;###autoload
 (defun bic-message-flag (flags-to-add flags-to-remove &optional full-uid)
-  "Add and remove flags for the message at point."
+  "Add and remove flags for the message at point.
+FLAGS-TO-ADD and FLAGS-TO-REMOVE are lists of strings.
+If FULL-UID is specified, use that message instead of
+the message at point."
   (let ((full-uid (or full-uid (bic--find-message-at-point)))
 	(fsm (bic--find-account bic--current-account)))
     (fsm-send
@@ -204,13 +208,17 @@ If the message is marked to be deleted, undelete it."
 (defun bic-message-flag-maybe-advance (flags-to-add flags-to-remove)
   "Add and remove flags, and maybe advance to next message.
 If point is in a mailbox buffer (not a message buffer),
-move point to the next message."
+move point to the next message.
+FLAGS-TO-ADD and FLAGS-TO-REMOVE are lists of strings."
   (bic-message-flag flags-to-add flags-to-remove)
   (when (derived-mode-p 'bic-mailbox-mode)
     (ignore-errors (ewoc-goto-next bic-mailbox--ewoc 1))))
 
 (defun bic-message-reply (&optional wide)
-  "Compose a reply to the current message."
+  "Compose a reply to the current message.
+If WIDE is non-nil, address the reply to all recipients
+as well as the sender of the original message (known as
+\"reply all\" in other email clients)."
   (interactive)
   (unless (derived-mode-p 'bic-message-mode)
     (user-error "Not in message buffer"))
