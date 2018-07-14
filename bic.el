@@ -79,7 +79,7 @@ account, and the new state.  Possible states are the values of
 `bic-account-state-table'.
 
 When an account FSM is stopped, these functions are called with
-`nil' as the new state.")
+nil as the new state.")
 
 (defvar bic-account-mailbox-table (make-hash-table :test 'equal)
   "Hash table of hash tables containing mailbox state.
@@ -140,6 +140,8 @@ Otherwise, start BIC for all known addresses."
 
 ;;;###autoload
 (defun bic-add-account (address)
+  "Add ADDRESS to the list of accounts in BIC.
+IMAP server details will be requested interactively."
   (interactive "sEmail address: ")
   (if (bic--find-account address)
       (user-error "%s already running" address)
@@ -321,6 +323,11 @@ ACCOUNT is a string of the form \"username@server\"."
     (list state-data nil)))
 
 (defun bic--ask-for-username (address)
+  "Ask the user what username to use for ADDRESS.
+RFC 6186 suggests using the full email address, or if that doesn't
+work, the \"local-part\" of the email address.  We don't attempt
+authentication with those two usernames as described in the RFC,
+but ask the user to pick one option."
   (let ((user-part (substring address 0 (cl-position ?@ address))))
     (pcase (widget-choose
 	    "IMAP username"
@@ -887,9 +894,19 @@ ACCOUNT is a string of the form \"username@server\"."
      (list nil state-data))))
 
 (defun bic--untagged-callback (fsm untagged-response)
+  ;; checkdoc-order: nil
+  "Pass a received UNTAGGED-RESPONSE to FSM.
+This function is meant to be given as UNTAGGED-CALLBACK to
+`start-bic-connection'."
   (fsm-send fsm (list :untagged-response untagged-response)))
 
 (defun bic--update-account-state (account new-state)
+  "Update ACCOUNT to NEW-STATE, and call hooks.
+Update the entry in `bic-account-state-table', or create a new
+entry if needed, and call `bic-account-state-update-functions'.
+Possible values for NEW-STATE are :connected, :disconnected,
+and :deactivated, or nil if the account state machine has been
+stopped."
   (let ((old-state (gethash account bic-account-state-table)))
     (unless (eq old-state new-state)
       (if (null new-state)
@@ -908,7 +925,10 @@ an entire file name.
 It also includes underscore, which is used as an escape character.")
 
 (defun bic--sanitize-mailbox-name (mailbox-name)
-  "Convert mailbox name to directory name."
+  "Convert MAILBOX-NAME to a directory name.
+MAILBOX-NAME is decoded from UTF-7, and characters in
+`bic-filename-invalid-characters' are escaped.  Hopefully this
+should consistently give a valid directory name."
   (let ((decoded (utf7-decode mailbox-name t))
 	(sanitized-to 0)
 	i sanitized-segments)
@@ -923,7 +943,8 @@ It also includes underscore, which is used as an escape character.")
     (apply #'concat (nreverse sanitized-segments))))
 
 (defun bic--unsanitize-mailbox-name (directory-name)
-  "Convert a directory name to a UTF-7 mailbox name."
+  "Convert DIRECTORY-NAME to a UTF-7 mailbox name.
+This is the reverse of `bic--sanitize-mailbox-name'."
   (let ((i 0) segments)
     (while (string-match "_\\([[:xdigit:]]+\\)_" directory-name i)
       (push (substring directory-name i (match-beginning 0)) segments)
@@ -933,11 +954,18 @@ It also includes underscore, which is used as an escape character.")
     (utf7-encode (apply 'concat (nreverse segments)) t)))
 
 (defun bic--mailbox-dir (state-data mailbox-name)
+  "Return the directory for the given mailbox.
+Use the base directory in STATE-DATA, and append the sanitized
+version of MAILBOX-NAME."
   (expand-file-name
    (bic--sanitize-mailbox-name mailbox-name)
    (plist-get state-data :dir)))
 
 (defun bic--handle-list-response (fsm state-data list-data)
+  "Handle a response to a LIST command.
+FSM and STATE-DATA are the account state machine and state data.
+LIST-DATA is a list of \"LIST\" and \"STATUS\" response lines,
+each line having been parsed into a list of tokens."
   (let* ((old-mailboxes (plist-get state-data :mailboxes))
 	 ;; If the server supports LIST-EXTENDED, then we will have
 	 ;; asked for mailbox subscription information.
@@ -1048,6 +1076,14 @@ It also includes underscore, which is used as an escape character.")
 	   (bic--maybe-next-task fsm state-data)))))))
 
 (defun bic--handle-fetch-response (state-data selected-mailbox msg uidvalidity)
+  "Handle a \"FETCH\" response line.
+This might be either a response to an explicit \"FETCH\" command,
+or an unsolicited update from the server.
+
+STATE-DATA is the state data of the account state machine.
+SELECTED-MAILBOX is the name of the currently selected mailbox.
+MSG is the response line, parsed into a list of elements.
+UIDVALIDITY is the current uid validity value of the mailbox."
   (let* ((dir (bic--mailbox-dir state-data selected-mailbox))
 	 (overview-file (expand-file-name "overview" dir))
 	 (overview-table (bic--read-overview state-data selected-mailbox))
@@ -1128,6 +1164,10 @@ It also includes underscore, which is used as an escape character.")
     ))
 
 (defun bic--handle-lsub-response (_fsm state-data lsub-data)
+  "Handle response to an \"LSUB\" command.
+STATE-DATA is the state data of the account state machine.
+LSUB-DATA is a list of \"LSUB\" response lines,
+each line having been parsed into a list of tokens."
   (let ((mailboxes (plist-get state-data :mailboxes))
 	(subscribed-mailboxes
 	 (delq nil
@@ -1167,6 +1207,9 @@ It also includes underscore, which is used as an escape character.")
       (bic--queue-task-if-new state-data (list :any-mailbox :list-status-all)))))
 
 (defun bic--sync-mailboxes (fsm state-data task)
+  "Download messages for mailboxes that need syncing.
+FSM and STATE-DATA are the account state machine and state data.
+TASK is the task identifier, used for sending the :task-finished message."
   ;; TODO: do we need to issue a new LIST-STATUS request here?
   ;; XXX: would that overwrite everything we know?
   (let ((download-messages-tasks
@@ -1188,7 +1231,11 @@ It also includes underscore, which is used as an escape character.")
 (defun bic--mailbox-sync-task-maybe (state-data mailbox-data)
   "Check whether to sync a mailbox.
 If sync needed, return a list of one task.
-If no sync needed, return an empty list."
+If no sync needed, return an empty list.
+
+STATE-DATA is the state data of the account state machine.
+MAILBOX-DATA is a list whose car is the mailbox name and whose
+cdr is a plist."
   (let* ((dir (bic--mailbox-dir state-data (car mailbox-data)))
 	 (modseq-file (expand-file-name "modseq" dir))
 	 (needs-sync
@@ -1211,8 +1258,11 @@ If no sync needed, return an empty list."
 	  (list task))))))
 
 (defun bic--mailbox-sync-task (state-data mailbox-name)
-  "Return the appropriate sync task for MAILBOX-NAME.
-Return nil if mailbox should not be synced."
+  "Return the appropriate sync task for a mailbox.
+Return nil if mailbox should not be synced.
+
+STATE-DATA is the state data of the account state machine.
+MAILBOX-NAME is the name of the mailbox in question."
   (cl-case (bic--mailbox-sync-level state-data mailbox-name)
     (:unlimited-sync
      (list mailbox-name :sync-mailbox))
@@ -1220,9 +1270,13 @@ Return nil if mailbox should not be synced."
      (list mailbox-name :sync-mailbox :limit 100))))
 
 (defun bic--set-sync-level (state-data mailbox new-sync-level)
-  "Update sync level for MAILBOX in STATE-DATA.
+  "Update mailbox sync level.
 If we should send a subscribe command, write a \"want-subscribed\"
-file and return t."
+file and return t.
+
+STATE-DATA is the state data of the account state machine.
+MAILBOX is the name of the mailbox.
+NEW-SYNC-LEVEL is either `unlimited-sync', `partial-sync' or `no-sync'."
   (let* ((mailbox-data (assoc mailbox (plist-get state-data :mailboxes)))
 	 (attributes (plist-get (cdr mailbox-data) :attributes))
 	 (want-subscribed (memq new-sync-level '(unlimited-sync partial-sync))))
@@ -1253,11 +1307,18 @@ file and return t."
       t)))
 
 (defun bic--mailbox-sync-level (state-data mailbox)
+  "Read the sync level of a mailbox.
+Return either :unlimited-sync, :partial-sync or :no-sync.
+
+STATE-DATA is the state data of the account state machine.
+MAILBOX is the name of the mailbox."
   (let ((mailbox-data (assoc mailbox (plist-get state-data :mailboxes))))
     (bic--infer-sync-level mailbox-data)))
 
 (defun bic--infer-sync-level (mailbox-data)
-  ;; Accept either a raw plist, or a plist prefixed with a mailbox name.
+  "Infer the sync level for a mailbox from its data.
+Return either :unlimited-sync, :partial-sync or :no-sync.
+MAILBOX-DATA is either a plist, or a plist prefixed with a mailbox name."
   (when (stringp (car mailbox-data))
     (setq mailbox-data (cdr mailbox-data)))
   (let ((attributes (plist-get mailbox-data :attributes))
@@ -1277,6 +1338,11 @@ file and return t."
       :partial-sync))))
 
 (defun bic--store-initial-mailbox-list (address mailboxes)
+  "Store mailbox data for ADDRESS in `bic-account-mailbox-table'.
+MAILBOXES is a list, each entry having the name of the mailbox as
+its car, and a plist of mailbox state as its cdr.
+
+Afterwards, call `bic-account-mailbox-update-functions'."
   (let ((table (gethash address bic-account-mailbox-table)))
     (if table
 	(clrhash table)
@@ -1293,6 +1359,10 @@ file and return t."
      address nil nil)))
 
 (defun bic--update-mailbox-status (address mailbox new-plist)
+  "Update mailbox data in `bic-account-mailbox-table'.
+ADDRESS is the account address, as a string.
+MAILBOX is the name of the mailbox.
+NEW-PLIST is the new mailbox data."
   (let ((table (gethash address bic-account-mailbox-table)))
     (puthash mailbox new-plist table)
     ;; Run in timer, to isolate errors.
@@ -1302,6 +1372,12 @@ file and return t."
      address mailbox new-plist)))
 
 (defun bic--handle-select-response (state-data mailbox-name select-data)
+  "Handle response to a SELECT command.
+
+STATE-DATA is the state data of the account state machine.
+MAILBOX-NAME is the name of the mailbox being selected.
+SELECT-DATA is the SELECT response, as passed to the callback of
+`bic-command'."
   (cl-flet ((find-entry (type)
 			(cl-find-if
 			 (lambda (x)
@@ -1387,6 +1463,14 @@ file and return t."
     (plist-put state-data :selected mailbox-name)))
 
 (defun bic--queue-task-if-new (state-data task)
+  "Add a task to the queue, unless it's already there.
+
+STATE-DATA is the state data of the account state machine.
+TASK is the new task to be added.
+
+If TASK is not nil, and is not `equal' to the current task, and
+is not `equal' to any of the pending tasks, it is added to the
+end of the task list."
   (unless (or (null task) (equal task (plist-get state-data :current-task)))
     (let ((existing-tasks (plist-get state-data :tasks)))
       (unless (member task existing-tasks)
@@ -1394,6 +1478,9 @@ file and return t."
 		   (append existing-tasks (list task)))))))
 
 (defun bic--maybe-next-task (fsm state-data)
+  "Start performing the next task, if appropriate.
+
+FSM and STATE-DATA are the account state machine and state data."
   (let ((tasks (plist-get state-data :tasks))
 	(selected-mailbox (plist-get state-data :selected))
 	(c (plist-get state-data :connection))
@@ -1436,7 +1523,11 @@ file and return t."
 	 (bic--select fsm state-data "INBOX"))))))
 
 (defun bic--select (fsm state-data mailbox)
-  "Issue a SELECT command for MAILBOX, and send response to FSM."
+  "Issue a SELECT command.
+FSM and STATE-DATA are the account state machine and state data.
+MAILBOX is the name of the mailbox to select.
+
+The response from the SELECT command is sent to the FSM."
   (let ((c (plist-get state-data :connection)))
     (plist-put state-data :selecting mailbox)
     ;; Start a timer, so that we detect that the connection is dead.
@@ -1459,7 +1550,9 @@ file and return t."
 Cancel existing timer, if any.
 
 If no data has been received for `bic-command-timeout' seconds,
-consider the connection dead."
+consider the connection dead.
+
+FSM and STATE-DATA are the account state machine and state data."
   (let* ((command-timeout-gensym (cl-gensym "command-timeout-"))
 	 (time (current-time))
 	 (timer (run-with-timer
@@ -1478,12 +1571,23 @@ consider the connection dead."
     (plist-put state-data :command-timeout-timer timer)))
 
 (defun bic--cancel-command-timeout-timer (state-data)
+  "Cancel a command timeout timer.
+This is used when we receive a response from the server.
+
+STATE-DATA is the state data of the account state machine."
   (let ((previous-timer (plist-get state-data :command-timeout-timer)))
     (when (timerp previous-timer)
       (cancel-timer previous-timer))
     (plist-put state-data :command-timeout-gensym nil)))
 
 (defun bic--do-task (fsm state-data task)
+  "Start performing a task.
+
+FSM and STATE-DATA are the account state machine and state data.
+TASK is a list representing the task.  Its car is either a
+mailbox name as a string, or the keyword :any-mailbox.
+This function assumes that we have selected the mailbox in
+question already."
   ;; No matter what we do, setting a timeout for it is a good idea.
   (bic--start-command-timeout-timer fsm state-data)
   (pcase task
@@ -1620,6 +1724,17 @@ consider the connection dead."
      (warn "Unknown task %S" task))))
 
 (defun bic--apply-pending-flags (fsm state-data task mailbox)
+  ;; checkdoc-order: nil
+  "Apply pending flags to messages in MAILBOX.
+
+\"Pending flags\" are flags that have been set through the UI,
+and written to the \"pending flags\" file, but not yet set on
+the IMAP server.
+
+FSM and STATE-DATA are the account state machine and state data.
+TASK is the list associated with this action; it is used to
+signal to FSM that we're done applying flags, so that it can
+proceed to the next task."
   ;; At this point, we should have selected the mailbox already.
   (cl-assert (string= mailbox (plist-get state-data :selected)))
   (let ((pending-flags-file
@@ -1790,11 +1905,17 @@ consider the connection dead."
 	 flag-change-uids)))))
 
 (defun bic--interesting-status-items (c)
+  "Return items we want to request for mailboxes.
+The returned string is used in STATUS commands.
+The items returned depends on the capabilities advertised
+for connection C."
   (concat "MESSAGES UIDNEXT UNSEEN UIDVALIDITY"
 	  (when (bic-connection--has-capability "CONDSTORE" c)
 	    " HIGHESTMODSEQ")))
 
 (defun bic--idle (fsm state-data)
+  "Enter IDLE state.
+FSM and STATE-DATA are the account state machine and state data."
   (let* ((idle-gensym (cl-gensym "IDLE-"))
 	 (timer (run-with-timer (* 29 60) nil
 				(lambda ()
@@ -1821,6 +1942,10 @@ consider the connection dead."
       (list 0 "FLAGS" #'ignore)))))
 
 (defun bic--idle-done (fsm state-data)
+  "Interrupt IDLE state.
+Send a \"DONE\" line to the server, and wait for it to acknowledge.
+
+FSM and STATE-DATA are the account state machine and state data."
   (let ((idle-gensym (cl-second (plist-get state-data :current-task))))
     (plist-put state-data :current-task
 	       (list :idle-done idle-gensym
@@ -1842,12 +1967,18 @@ consider the connection dead."
        (signal (car e) (cdr e)))))))
 
 (defun bic--numeric-string-lessp (s1 s2)
+  "Compare two integers that are represented as strings.
+Return t if S1 is less than S2, otherwise nil."
   (cond ((< (length s1) (length s2)) t)
 	((> (length s1) (length s2)) nil)
 	((string= s1 s2) nil)
 	(t (string-lessp s1 s2))))
 
 (defun bic--sync-mailbox (fsm state-data task)
+  "Download messages for a mailbox.
+FSM and STATE-DATA are the account state machine and state data.
+TASK is the list associated with this action.  It contains the
+mailbox name, and two options, :limit and :verbose."
   ;; TODO: do something clever with the limit, so we don't need to
   ;; dig through too much data.
   (let* ((mailbox (car task))
@@ -2035,6 +2166,17 @@ consider the connection dead."
 (defun bic--handle-search-response
     (fsm state-data task unseen-flagged-search-data recent-search-data
 	 highest-modseq server-modseq)
+  "Handle search response while synchronising a mailbox.
+FSM and STATE-DATA are the account state machine and state data.
+TASK is the list associated with this action.
+UNSEEN-FLAGGED-SEARCH-DATA contains the result of the search for
+unseen or flagged messages.
+RECENT-SEARCH-DATA contains the result of the search for recent
+messages.
+HIGHEST-MODSEQ is the highest MODSEQ value seen while fetching
+messages with flag changes.
+SERVER-MODSEQ is the HIGHESTMODSEQ value returned by the server
+in the SELECT response."
   ;; Handle search response by fetching the body of all messages that
   ;; we don't have yet.
   (let* ((unseen-flagged-ranges (bic--get-search-range unseen-flagged-search-data))
@@ -2196,8 +2338,9 @@ consider the connection dead."
 	       #'<)
 	 t)))))
 
-(defun bic--get-esearch-range (esearch)
-  (pcase (member "ALL" esearch)
+(defun bic--get-esearch-range (esearch-data)
+  "Return the results in ESEARCH-DATA as a list of ranges."
+  (pcase (member "ALL" esearch-data)
     (`("ALL" ,ranges-string . ,_)
      (bic-parse-sequence-set ranges-string))
     (_
@@ -2209,6 +2352,9 @@ consider the connection dead."
      nil)))
 
 (defun bic--read-overview (state-data mailbox-name)
+  ;; checkdoc-params: (state-data)
+  "Read the overview file for MAILBOX-NAME.
+The overview file contains message UIDs and envelope information."
   (let* ((dir (bic--mailbox-dir state-data mailbox-name))
 	 (overview-table (gethash mailbox-name (plist-get state-data :overview-per-mailbox)))
 	 (uid-tree (gethash mailbox-name (plist-get state-data :uid-tree-per-mailbox)))
@@ -2244,6 +2390,10 @@ consider the connection dead."
     overview-table))
 
 (defun bic--read-flags-table (state-data mailbox-name)
+  ;; checkdoc-params: (state-data)
+  "Read the flags file for MAILBOX-NAME.
+The flags file contains message UIDs and flags added to or
+removed from messages."
   (let ((flags-table (gethash mailbox-name (plist-get state-data :flags-per-mailbox))))
     (when (null flags-table)
       (setq flags-table (make-hash-table :test 'equal))
@@ -2287,6 +2437,12 @@ consider the connection dead."
     flags-table))
 
 (defun bic--write-pending-flags (mailbox full-uid flags-to-add flags-to-remove state-data)
+  "Write flags to disk, pending update on the server.
+MAILBOX and FULL-UID are strings identifying the mailbox and the message.
+FLAGS-TO-ADD and FLAGS-TO-REMOVE are lists of strings.
+The flag changes will be written to the \"pending-flags\" file
+in the mailbox directory, to be applied by `bic--apply-pending-flags'.
+STATE-DATA is the state data of the account state machine."
   (pcase-let ((`(,uidvalidity ,_uid) (split-string full-uid "-"))
 	      ;; XXX: get mailbox data here
 	      (stored-uid-validity
@@ -2326,6 +2482,12 @@ consider the connection dead."
 	 mailbox full-uid)))))
 
 (defun bic--messages-expunged (state-data mailbox expunged-full-uids)
+  "Remove expunged messages from the mailbox overview.
+STATE-DATA is the state data of the account state machine.
+MAILBOX is the name of the mailbox where messages have been
+expunged.
+EXPUNGED-FULL-UIDS is a list of strings, identifying the
+messages that the server has told us have been expunged."
   (let* ((overview-table (bic--read-overview state-data mailbox))
 	 (uid-tree (gethash mailbox (plist-get state-data :uid-tree-per-mailbox)))
 	 (dir (bic--mailbox-dir state-data mailbox))
@@ -2350,6 +2512,10 @@ consider the connection dead."
 	))))
 
 (defun bic--date-text (time)
+  "Convert TIME into an IMAP date.
+TIME is an Emacs time value, as returned by `current-time'.
+It is converted to a date using the current time zone.
+The time of day portion is discarded."
   (pcase-let ((`(,_sec ,_min ,_hour ,day ,month ,year . ,_)
 	       (decode-time time)))
     (format "%02d-%s-%04d"
@@ -2375,18 +2541,42 @@ Like `prin1', but escape newlines, and bind variables to avoid surprises."
     (write-region (point-min) (point-max) file nil :silent)))
 
 (defun bic-list-status (account)
+  "Request a status update for all mailboxes in ACCOUNT.
+This will detect new messages in mailboxes other than INBOX,
+and if those mailboxes have the appropriate sync level, the
+new messages will be downloaded."
   (interactive (list (bic--read-running-account)))
   (when (stringp account)
     (setq account (bic--find-account account)))
   (fsm-send account '(:queue-task (:any-mailbox :list-status-all))))
 
 (defun bic-list-status-all ()
+  "Request a status update for all mailboxes in all accounts.
+This will detect new messages in mailboxes other than INBOX,
+and if those mailboxes have the appropriate sync level, the
+new messages will be downloaded."
   (interactive)
   (mapc #'bic-list-status bic-running-accounts))
 
 ;;; Set sync level
 
 (defun bic-mailbox-set-sync-level (account mailbox sync-level)
+  ;; checkdoc-order: nil
+  "Set the sync level for MAILBOX in ACCOUNT to SYNC-LEVEL.
+SYNC-LEVEL is one of:
+
+- unlimited-sync
+- partial-sync
+- no-sync
+
+\"Unlimited sync\" means that all unread or flagged messages are
+downloaded, as well as all messages in the last 30 days.
+
+\"Partial sync\" means that no more than 100 messages are
+downloaded: first unread or flagged messages, and if there are
+fewer than 100 of those, messages from the last 30 days.
+
+\"No sync\" means that no messages are downloaded."
   (interactive
    (let* ((account (bic--read-existing-account "IMAP account: " t))
 	  (mailbox (bic--read-mailbox "Mailbox: " account t))
@@ -2405,20 +2595,27 @@ Like `prin1', but escape newlines, and bind variables to avoid surprises."
 
 (defun bic--read-existing-account (prompt require-match)
   "Read the name of an email account with completion.
+Use PROMPT as the prompt.
 If REQUIRE-MATCH is non-nil, only accept accounts that we know
 about."
   (let ((accounts (directory-files bic-data-directory nil "@")))
     (completing-read prompt accounts nil require-match)))
 
 (defun bic--directory-directories (dir regexp)
-  "Like `directory-files', but only returns directories."
+  "Like `directory-files', but only return directories.
+Return a list of all directories in DIR whose names match
+REGEXP."
   (cl-remove-if-not
    (lambda (file)
      (file-directory-p (expand-file-name file dir)))
    (directory-files dir nil regexp)))
 
 (defun bic--read-mailbox (prompt account require-match)
-  "Read the name of a mailbox for ACCOUNT."
+  ;; checkdoc-order: nil
+  "Read the name of a mailbox for ACCOUNT.
+Prompt with PROMPT, and offer existing mailboxes for completion.
+If REQUIRE-MATCH is non-nil, don't allow entering the name of a
+non-existent mailbox."
   ;; Present the "real" name for completion etc, and return the UTF-7
   ;; encoded name that's used in IMAP commands.
   (let* ((mailboxes (bic--directory-directories (expand-file-name account bic-data-directory) "[^.]"))
