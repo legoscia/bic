@@ -114,14 +114,14 @@ if you want.
 - If you enter the wrong password, BIC will repeatedly try to connect
   using the incorrect password until you run =M-x
   auth-source-forget-all-cached=.
-- While BIC attempts to open connections asynchronously, Emacs
-  currently performs DNS requests synchronously.  This can sometimes
-  lead to the user interface being blocked while BIC tries to
-  reconnect to the server.  There was
-  [[https://lists.gnu.org/archive/html/emacs-devel/2015-02/msg00830.html][a thread about this on emacs-devel]], and [[https://lists.gnu.org/archive/html/emacs-devel/2016-01/msg01348.html][another one]].
+- While BIC attempts to open connections asynchronously, on some
+  systems Emacs performs DNS requests synchronously.  This can
+  sometimes lead to the user interface being blocked while BIC tries
+  to reconnect to the server.  There was [[https://lists.gnu.org/archive/html/emacs-devel/2015-02/msg00830.html][a thread about this on
+  emacs-devel]], and [[https://lists.gnu.org/archive/html/emacs-devel/2016-01/msg01348.html][another one]].
 
-  For GNU/Linux, support for asynchronous DNS resolution is in the
-  Emacs =master= branch, and it will be present in a future release.
+  For GNU/Linux, support for asynchronous DNS resolution was
+  introduced in Emacs 26.1.
 
   For OS X, asynchronous DNS is not yet supported.  See
   [[https://lists.gnu.org/archive/html/emacs-devel/2016-05/msg00526.html][this emacs-devel thread]].
