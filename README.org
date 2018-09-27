@@ -53,12 +53,8 @@ ideas and questions.
 BIC requires *Emacs 25*, nothing less.  Emacs 25.1 was released on
 2016-09-17.
 
-BIC also requires the package [[https://elpa.gnu.org/packages/fsm.html][fsm from GNU ELPA]] to be installed.
-
-BIC also requires a recent version of [[http://emacs-jabber.sourceforge.net][jabber.el]] to be installed.  The
-easiest way to satisfy this is to install the =jabber= package from
-[[http://melpa.milkbox.net/][MELPA]].  Strictly speaking, it only requires =srv.el=, which should
-probably be turned into an independent library.
+BIC also requires the packages [[https://elpa.gnu.org/packages/fsm.html][fsm (from GNU ELPA)]] and [[http://melpa.org/#/srv][srv (from
+MELPA)]] to be installed.
 
 BIC has not been tested on Windows, so any reports, positive or
 negative, are very welcome.
