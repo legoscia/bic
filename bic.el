@@ -484,12 +484,18 @@ but ask the user to pick one option."
   (_fsm state-data event callback)
   (let ((our-connection (plist-get state-data :connection)))
     (pcase event
-      (`((:disconnected ,_keyword ,_reason) ,(pred (eq our-connection)))
-       ;; We used to display a message here, but that can be rather
-       ;; annoying if you're starting BIC without a network
-       ;; connection.  Just check the mailbox tree view to see if
-       ;; you're connected or not.
-       (list :disconnected state-data))
+      (`((:disconnected ,keyword ,reason) ,(pred (eq our-connection)))
+       (cond
+	((memq keyword '(:authentication-failed :authentication-abort))
+	 (warn "Authentication failure: %s\nDeactivating account `%s'.  To retry, type M-x bic-activate."
+	       reason (plist-get state-data :address))
+	 (list :disconnected (plist-put state-data :deactivated t)))
+	(t
+	 ;; We used to display a message here, but that can be rather
+	 ;; annoying if you're starting BIC without a network
+	 ;; connection.  Just check the mailbox tree view to see if
+	 ;; you're connected or not.
+	 (list :disconnected state-data))))
       (:timeout
        ;; Ditto.
        (fsm-send our-connection :stop)

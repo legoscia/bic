@@ -318,6 +318,10 @@ Argument CAPABILITIES is the capabilities reported by the server."
 	     (bic--fail state-data
 			:authentication-abort
 			"Timeout waiting for password during IMAP authentication"))
+	    (`(:unexpected . ,unexpected)
+	     (bic--fail state-data
+			:authentication-abort
+			(format "Unexpected data from auth source: %S" unexpected)))
 	    (_
 	     ;; XXX: we can't send the AUTHENTICATE command here, because
 	     ;; sending data over a network connection means that we can
@@ -449,7 +453,7 @@ Argument CAPABILITIES is the capabilities reported by the server."
 			"Timeout waiting for password during IMAP authentication"))
 	    (other
 	     (bic--fail state-data
-			:unexpected-error
+			:authentication-abort
 			(format "Unexpected result of SASL step: %S" other))))))
        (`("auth" :ok . ,plist)
 	;; XXX: check local success/failure here too
@@ -480,7 +484,7 @@ Argument CAPABILITIES is the capabilities reported by the server."
        (`("auth" :bad . ,plist)
 	;; This shouldn't happen
 	(bic--fail state-data
-		   :unexpected-error
+		   :authentication-abort
 		   (format "Unexpected IMAP authentication error: %s"
 			   (plist-get plist :text))))
        (`("*" ,_ . ,_)
