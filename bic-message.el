@@ -155,43 +155,61 @@ or the message under point in a mailbox buffer."
 (defun bic-message-mark-read ()
   "Mark the message at point as read.
 If the message is marked as flagged, remove the flag.
-If the message is marked to be deleted, undelete it."
+If the message is marked to be deleted, undelete it.
+
+In a mailbox buffer, if the region is active, act on all messages in
+the region."
   (interactive)
-  (bic-message-flag-maybe-advance '("\\Seen") '("\\Flagged" "\\Deleted")))
+  (bic-message-flag-maybe-advance "read" '("\\Seen") '("\\Flagged" "\\Deleted")))
 
 ;;;###autoload
 (defun bic-message-mark-unread ()
   "Mark the message at point as unread.
 If the message is marked as flagged, remove the flag.
-If the message is marked to be deleted, undelete it."
+If the message is marked to be deleted, undelete it.
+
+In a mailbox buffer, if the region is active, act on all messages in
+the region."
   (interactive)
-  (bic-message-flag-maybe-advance () '("\\Seen" "\\Flagged" "\\Deleted")))
+  (bic-message-flag-maybe-advance "unread" () '("\\Seen" "\\Flagged" "\\Deleted")))
 
 ;;;###autoload
 (defun bic-message-mark-flagged ()
   "Mark the message at point as flagged.
 Also mark it as read.
-If the message is marked to be deleted, undelete it."
+If the message is marked to be deleted, undelete it.
+
+In a mailbox buffer, if the region is active, act on all messages in
+the region."
   (interactive)
-  (bic-message-flag-maybe-advance '("\\Seen" "\\Flagged") '("\\Deleted")))
+  (bic-message-flag-maybe-advance "flagged" '("\\Seen" "\\Flagged") '("\\Deleted")))
 
 ;;;###autoload
 (defun bic-message-mark-spam ()
-  "Mark the message at point as spam (junk)."
+  "Mark the message at point as spam (junk).
+
+In a mailbox buffer, if the region is active, act on all messages in
+the region."
   (interactive)
-  (bic-message-flag-maybe-advance '("$Junk") '("$NotJunk")))
+  (bic-message-flag-maybe-advance "spam" '("$Junk") '("$NotJunk")))
 
 ;;;###autoload
 (defun bic-message-mark-not-spam ()
-  "Mark the message at point as not spam (not junk)."
+  "Mark the message at point as not spam (not junk).
+
+In a mailbox buffer, if the region is active, act on all messages in
+the region."
   (interactive)
-  (bic-message-flag-maybe-advance '("$NotJunk") '("$Junk")))
+  (bic-message-flag-maybe-advance "not spam" '("$NotJunk") '("$Junk")))
 
 ;;;###autoload
 (defun bic-message-mark-deleted ()
-  "Mark the message at point for deletion."
+  "Mark the message at point for deletion.
+
+In a mailbox buffer, if the region is active, act on all messages in
+the region."
   (interactive)
-  (bic-message-flag-maybe-advance '("\\Deleted") ()))
+  (bic-message-flag-maybe-advance "deleted" '("\\Deleted") ()))
 
 ;;;###autoload
 (defun bic-message-flag (flags-to-add flags-to-remove &optional full-uid)
@@ -205,14 +223,37 @@ the message at point."
      fsm
      (list :flags bic--current-mailbox full-uid flags-to-add flags-to-remove))))
 
-(defun bic-message-flag-maybe-advance (flags-to-add flags-to-remove)
+(defun bic-message-flag-maybe-advance (human-readable flags-to-add flags-to-remove)
   "Add and remove flags, and maybe advance to next message.
 If point is in a mailbox buffer (not a message buffer),
 move point to the next message.
-FLAGS-TO-ADD and FLAGS-TO-REMOVE are lists of strings."
-  (bic-message-flag flags-to-add flags-to-remove)
-  (when (derived-mode-p 'bic-mailbox-mode)
-    (ignore-errors (ewoc-goto-next bic-mailbox--ewoc 1))))
+HUMAN-READABLE is a string to be used when prompting to confirm.
+FLAGS-TO-ADD and FLAGS-TO-REMOVE are lists of strings.
+
+If in a mailbox buffer and the region is active, act on all
+messages in the region."
+  (cond
+   ((and (derived-mode-p 'bic-mailbox-mode) (use-region-p))
+    (let* ((first (ewoc-locate bic-mailbox--ewoc (region-beginning)))
+	   (last (ewoc-locate bic-mailbox--ewoc (1- (region-end)) first))
+	   nodes
+	   (count 0))
+      (unless (and first last)
+	(user-error "No message at point or mark"))
+      (while last
+	(push last nodes)
+	(cl-incf count)
+	(setq last (when (not (eq last first))
+		     (ewoc-prev bic-mailbox--ewoc last))))
+      (unless (yes-or-no-p (format "Mark %d messages as %s? " count human-readable))
+	(signal 'quit nil))
+      (setq deactivate-mark t)
+      (dolist (node nodes)
+	(bic-message-flag flags-to-add flags-to-remove (ewoc-data node)))))
+   (t
+    (bic-message-flag flags-to-add flags-to-remove)
+    (when (derived-mode-p 'bic-mailbox-mode)
+      (ignore-errors (ewoc-goto-next bic-mailbox--ewoc 1))))))
 
 (defun bic-message-reply (&optional wide)
   "Compose a reply to the current message.
