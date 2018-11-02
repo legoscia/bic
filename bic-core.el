@@ -534,7 +534,11 @@ the username and server name from."
 	 (throw :bic-sasl-abort :timeout))
 	(:quit
 	 (throw :bic-sasl-abort :quit))
-	(`(,found . ,_)
+	((and `(,found . ,_) (guard found))
+	 ;; Some non-default auth-source backends might return an
+	 ;; empty list, despite us passing :create t.  The `guard'
+	 ;; above makes us reach the "unexpected" case below in that
+	 ;; case.
 	 (let ((secret (plist-get found :secret))
 	       (save-function (plist-get found :save-function)))
 	   (plist-put state-data :password-save-function save-function)
