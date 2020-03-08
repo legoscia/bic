@@ -50,6 +50,11 @@
   "Face used for messages marked for deletion."
   :group 'bic)
 
+(defface bic-mailbox-processable
+  '((t (:inherit highlight)))
+  "Face used for messages marked as processable."
+  :group 'bic)
+
 (defvar-local bic-mailbox--ewoc nil)
 
 (defvar-local bic-mailbox--ewoc-nodes-table nil
@@ -64,6 +69,8 @@
 (defvar-local bic-mailbox--fixup-times-timer nil)
 
 (defvar-local bic-mailbox--fixup-times-at nil)
+
+(defvar-local bic-mailbox--processable nil)
 
 ;;;###autoload
 (defun bic-mailbox-open (account mailbox)
@@ -103,6 +110,9 @@ If there is no such buffer, return nil."
     (define-key map (kbd "B DEL") 'bic-message-mark-deleted)
     (define-key map "$" 'bic-message-mark-spam)
     (define-key map "\M-$" 'bic-message-mark-not-spam)
+    (define-key map "#" 'bic-mailbox-mark-processable)
+    (define-key map (kbd "M-#") 'bic-mailbox-unmark-processable)
+    (define-key map (kbd "C-M-#") 'bic-mailbox-unmark-all-processable)
     (define-key map "c" 'bic-mailbox-catchup)
     (define-key map "n" 'bic-mailbox-next-unread)
     (define-key map " " 'bic-mailbox-next-page-or-next-unread)
@@ -128,7 +138,9 @@ If there is no such buffer, return nil."
 	       (propertize " [not all recent fetched]"
 			   'face 'warning)))))))
   (setq-local revert-buffer-function #'bic-mailbox-reload)
-  (setq-local truncate-lines t))
+  (setq-local truncate-lines t)
+  (unless bic-mailbox--processable
+    (setq bic-mailbox--processable (make-hash-table :test 'equal))))
 
 (defun bic-mailbox--init (account mailbox)
   ;; checkdoc-params: (account mailbox)
@@ -181,7 +193,9 @@ If there is no such buffer, return nil."
   ;; checkdoc-params: (msg)
   "Ewoc pretty-printer function for mailbox buffer."
   (let ((envelope (gethash msg bic-mailbox--hashtable))
-	(flags (gethash msg bic-mailbox--flags-table)))
+	(flags (gethash msg bic-mailbox--flags-table))
+	(processable (and bic-mailbox--processable
+			  (gethash msg bic-mailbox--processable))))
     (pcase envelope
       (`(,date ,subject (,from . ,_) . ,_)
        ;; TODO: nicer format
@@ -189,7 +203,7 @@ If there is no such buffer, return nil."
 	 (insert
 	  (propertize
 	   (concat
-	    (bic-mailbox--format-flags flags)
+	    (bic-mailbox--format-flags flags processable)
 	    (col 3) (bic-mailbox--format-date date)
 	    (col 16) "[ "
 	    (truncate-string-to-width
@@ -199,25 +213,29 @@ If there is no such buffer, return nil."
 	     20)
 	    (col 39) "] "
 	    (rfc2047-decode-string subject))
-	   'face (bic-mailbox--face-from-flags flags)))))
+	   'face (bic-mailbox--face-from-flags flags processable)))))
       (`nil
        (warn "Message %s not found in hash table" msg)))))
 
-(defun bic-mailbox--face-from-flags (flags)
-  "Return the font face to use for a message, based on FLAGS."
-  (cond
-   ((member "\\Deleted" flags)
-    'bic-mailbox-deleted)
-   ((member "$Junk" flags)
-    'bic-mailbox-spam)
-   ((member "\\Flagged" flags)
-    'bic-mailbox-flagged)
-   ((member "\\Seen" flags)
-    'bic-mailbox-read)
-   (t
-    'bic-mailbox-unread)))
+(defun bic-mailbox--face-from-flags (flags processable)
+  "Return the font face to use for a message, based on FLAGS and PROCESSABLE."
+  (let ((flag-face
+	 (cond
+	  ((member "\\Deleted" flags)
+	   'bic-mailbox-deleted)
+	  ((member "$Junk" flags)
+	   'bic-mailbox-spam)
+	  ((member "\\Flagged" flags)
+	   'bic-mailbox-flagged)
+	  ((member "\\Seen" flags)
+	   'bic-mailbox-read)
+	  (t
+	   'bic-mailbox-unread))))
+    (if processable
+	(list 'bic-mailbox-processable flag-face)
+      flag-face)))
 
-(defun bic-mailbox--format-flags (flags)
+(defun bic-mailbox--format-flags (flags processable)
   "Return indicators to use for a message, given FLAGS.
 The indicators consist of two characters.  First character:
 
@@ -229,6 +247,7 @@ The indicators consist of two characters.  First character:
 
 Second character:
 
+- If the message is marked as PROCESSABLE: #
 - If the message has been answered: A
 - If the message has been forwarded: F
 - Otherwise, the second character is a space"
@@ -246,6 +265,8 @@ Second character:
 	    (t
 	     ?\s))
 	   (cond
+	    (processable
+	     ?#)
 	    ((member "\\Answered" flags)
 	     ?A)
 	    ((member "$Forwarded" flags)
@@ -537,6 +558,7 @@ If there is no buffer displaying the mailbox in question, do nothing."
 FULL-UID is a string containing the uidvalidity and the uid of the
 message."
   (with-current-buffer buffer
+    (remhash full-uid bic-mailbox--processable)
     (pcase (gethash full-uid bic-mailbox--ewoc-nodes-table)
       (`nil
        ;; Not found; nothing to do.
@@ -546,7 +568,37 @@ message."
 	 (let ((inhibit-read-only t))
 	   (ewoc-delete bic-mailbox--ewoc node)))))))
 
+(defun bic-mailbox-mark-processable ()
+  (interactive)
+  "Mark the current message as processable and move to the next message."
+  (unless (derived-mode-p 'bic-mailbox-mode)
+    (user-error "Not in mailbox buffer"))
+  (let ((full-uid (bic--find-message-at-point)))
+    (puthash full-uid t bic-mailbox--processable)
+    (bic-mailbox--update-message (current-buffer) full-uid)
+    (ignore-errors (ewoc-goto-next bic-mailbox--ewoc 1))))
 
+(defun bic-mailbox-unmark-processable ()
+  (interactive)
+  "Remove the processable mark from the current message and move to the next message."
+  (unless (derived-mode-p 'bic-mailbox-mode)
+    (user-error "Not in mailbox buffer"))
+  (let ((full-uid (bic--find-message-at-point)))
+    (remhash full-uid bic-mailbox--processable)
+    (bic-mailbox--update-message (current-buffer) full-uid)
+    (ignore-errors (ewoc-goto-next bic-mailbox--ewoc 1))))
+
+(defun bic-mailbox-unmark-all-processable ()
+  (interactive)
+  "Remove the processable mark from all messages in the current mailbox."
+  (unless (derived-mode-p 'bic-mailbox-mode)
+    (user-error "Not in mailbox buffer"))
+  (let (previously-processable)
+    (maphash (lambda (full-uid _value) (push full-uid previously-processable))
+	     bic-mailbox--processable)
+    (clrhash bic-mailbox--processable)
+    (dolist (full-uid previously-processable)
+      (bic-mailbox--update-message (current-buffer) full-uid))))
 
 (provide 'bic-mailbox)
 ;;; bic-mailbox.el ends here

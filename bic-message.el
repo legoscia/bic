@@ -231,7 +231,9 @@ HUMAN-READABLE is a string to be used when prompting to confirm.
 FLAGS-TO-ADD and FLAGS-TO-REMOVE are lists of strings.
 
 If in a mailbox buffer and the region is active, act on all
-messages in the region."
+messages in the region.
+Otherwise, if some messages are marked as processable, act
+on those messages."
   (cond
    ((and (derived-mode-p 'bic-mailbox-mode) (use-region-p))
     (let* ((first (ewoc-locate bic-mailbox--ewoc (region-beginning)))
@@ -250,6 +252,16 @@ messages in the region."
       (setq deactivate-mark t)
       (dolist (node nodes)
 	(bic-message-flag flags-to-add flags-to-remove (ewoc-data node)))))
+   ((and (derived-mode-p 'bic-mailbox-mode)
+	 (> (hash-table-count bic-mailbox--processable) 0))
+    (unless (yes-or-no-p (format "Mark %d messages as %s? "
+				 (hash-table-count bic-mailbox--processable)
+				 human-readable))
+      (signal 'quit nil))
+    (maphash
+     (lambda (full-uid _value)
+       (bic-message-flag flags-to-add flags-to-remove full-uid))
+     bic-mailbox--processable))
    (t
     (bic-message-flag flags-to-add flags-to-remove)
     (when (derived-mode-p 'bic-mailbox-mode)
