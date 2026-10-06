@@ -41,6 +41,7 @@
     (define-key map (kbd "M-u") 'bic-message-mark-unread)
     (define-key map "!" 'bic-message-mark-flagged)
     (define-key map (kbd "B DEL") 'bic-message-mark-deleted)
+    (define-key map (kbd "B t") 'bic-message-move-to-gmail-trash)
     (define-key map "$" 'bic-message-mark-spam)
     (define-key map "\M-$" 'bic-message-mark-not-spam)
     ;; (define-key map (kbd "RET") 'bic-mailbox-read-message)
@@ -210,6 +211,49 @@ In a mailbox buffer, if the region is active, act on all messages in
 the region."
   (interactive)
   (bic-message-flag-maybe-advance "deleted" '("\\Deleted") ()))
+
+;;;###autoload
+(defun bic-message-move-to-gmail-trash ()
+  "Move the message at point to Gmail's Trash label.
+
+In a mailbox buffer, if the region is active, act on all messages in
+the region.  Otherwise, act on processable messages when any are
+marked.  This requires a connected Gmail IMAP account."
+  (interactive)
+  (cl-labels ((move-one
+               (full-uid)
+               (fsm-send (bic--find-account bic--current-account)
+                         (list :gmail-trash bic--current-mailbox full-uid))))
+    (cond
+     ((and (derived-mode-p 'bic-mailbox-mode) (use-region-p))
+      (let* ((first (ewoc-locate bic-mailbox--ewoc (region-beginning)))
+             (last (ewoc-locate bic-mailbox--ewoc (1- (region-end)) first))
+             nodes)
+        (unless (and first last)
+          (user-error "No message at point or mark"))
+        (while last
+          (push last nodes)
+          (setq last (unless (eq last first)
+                       (ewoc-prev bic-mailbox--ewoc last))))
+        (setq nodes (nreverse nodes))
+        (unless (yes-or-no-p (format "Move %d messages to Gmail Trash? "
+                                     (length nodes)))
+          (signal 'quit nil))
+        (setq deactivate-mark t)
+        (dolist (node nodes)
+          (move-one (ewoc-data node)))))
+     ((and (derived-mode-p 'bic-mailbox-mode)
+           (> (hash-table-count bic-mailbox--processable) 0))
+      (unless (yes-or-no-p
+               (format "Move %d messages to Gmail Trash? "
+                       (hash-table-count bic-mailbox--processable)))
+        (signal 'quit nil))
+      (maphash (lambda (full-uid _value) (move-one full-uid))
+               bic-mailbox--processable))
+     (t
+      (move-one (bic--find-message-at-point))
+      (when (derived-mode-p 'bic-mailbox-mode)
+        (ignore-errors (ewoc-goto-next bic-mailbox--ewoc 1)))))))
 
 ;;;###autoload
 (defun bic-message-flag (flags-to-add flags-to-remove &optional full-uid)

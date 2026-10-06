@@ -108,6 +108,7 @@ If there is no such buffer, return nil."
     (define-key map (kbd "M-u") 'bic-message-mark-unread)
     (define-key map "!" 'bic-message-mark-flagged)
     (define-key map (kbd "B DEL") 'bic-message-mark-deleted)
+    (define-key map (kbd "B t") 'bic-message-move-to-gmail-trash)
     (define-key map "$" 'bic-message-mark-spam)
     (define-key map "\M-$" 'bic-message-mark-not-spam)
     (define-key map "#" 'bic-mailbox-mark-processable)
@@ -518,16 +519,23 @@ If the message is currently not displayed, add it to the end
 of the buffer.  If the message is displayed, call the ewoc
 pretty-printer again to update display for new flags etc."
   (with-current-buffer buffer
-    (pcase (gethash full-uid bic-mailbox--ewoc-nodes-table)
-      (`nil
-       ;; Not found; add to end of buffer.
-       ;; TODO: respect existing restrictions, such as "only unread"
-       (puthash
-	full-uid (ewoc-enter-last bic-mailbox--ewoc full-uid)
-	bic-mailbox--ewoc-nodes-table))
-      (node
-       (when (ewoc-location node)
-	 (bic-mailbox--invalidate bic-mailbox--ewoc node))))))
+    (let ((node (gethash full-uid bic-mailbox--ewoc-nodes-table)))
+      (if (not (and (hash-table-p bic-mailbox--hashtable)
+		    (gethash full-uid bic-mailbox--hashtable)))
+	  ;; An expunge can race with a delayed FETCH update.  Drop any
+	  ;; stale node instead of trying to refresh a deleted EWOC entry.
+	  (when node
+	    (when (ewoc-location node)
+	      (let ((inhibit-read-only t))
+		(ewoc-delete bic-mailbox--ewoc node)))
+	    (remhash full-uid bic-mailbox--ewoc-nodes-table))
+	(if (and node (ewoc-location node))
+	    (bic-mailbox--invalidate bic-mailbox--ewoc node)
+	  ;; Not found (or the old node was deleted); add it to the end.
+	  ;; TODO: respect existing restrictions, such as "only unread"
+	  (puthash
+	   full-uid (ewoc-enter-last bic-mailbox--ewoc full-uid)
+	   bic-mailbox--ewoc-nodes-table))))))
 
 (defun bic-mailbox--invalidate (ewoc node)
   ;; checkdoc-params: (ewoc node)
@@ -566,7 +574,8 @@ message."
       (node
        (when (ewoc-location node)
 	 (let ((inhibit-read-only t))
-	   (ewoc-delete bic-mailbox--ewoc node)))))))
+	   (ewoc-delete bic-mailbox--ewoc node)))
+	(remhash full-uid bic-mailbox--ewoc-nodes-table)))))
 
 (defun bic-mailbox-mark-processable ()
   (interactive)

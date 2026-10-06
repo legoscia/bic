@@ -506,6 +506,10 @@ but ask the user to pick one option."
       (`(:flags ,mailbox ,full-uid ,flags-to-add ,flags-to-remove)
        (bic--write-pending-flags mailbox full-uid flags-to-add flags-to-remove state-data)
        (list :existing state-data :keep))
+      (`(:gmail-trash ,mailbox ,full-uid)
+       (bic--write-pending-gmail-trash mailbox full-uid state-data)
+       (message "Queued message %s to move to Gmail Trash when connected" full-uid)
+       (list :existing state-data :keep))
       (`(:get-mailbox-tables ,mailbox)
        (let ((overview-table (bic--read-overview state-data mailbox))
 	     (flags-table (bic--read-flags-table state-data mailbox))
@@ -550,6 +554,18 @@ but ask the user to pick one option."
 	 (pending-flags-tasks (mapcar (lambda (mailbox)
 					(list mailbox :pending-flags))
 				      mailboxes-with-pending-flags))
+	 (pending-gmail-trash-tasks
+	  (cl-mapcan
+	   (lambda (file)
+	     (let ((mailbox
+		    (bic--unsanitize-mailbox-name
+		     (directory-file-name (file-name-directory file)))))
+	       (with-temp-buffer
+		 (insert-file-contents-literally file)
+		 (mapcar (lambda (full-uid)
+			   (list mailbox :gmail-trash full-uid))
+			 (split-string (buffer-string) "\n" t)))))
+	   (file-expand-wildcards "*/pending-gmail-trash")))
 	 (want-subscribed-files (file-expand-wildcards "*/want-subscribed"))
 	 (want-subscribed-mailboxes
 	  (mapcar
@@ -563,6 +579,7 @@ but ask the user to pick one option."
 		  want-subscribed-mailboxes)))
     ;; NB: Overwriting any existing tasks from previous connections.
     (plist-put state-data :tasks (append pending-flags-tasks
+					 pending-gmail-trash-tasks
 					 want-subscribed-tasks))
     (plist-put state-data :current-task nil))
 
@@ -752,6 +769,16 @@ but ask the user to pick one option."
      (bic--queue-task-if-new state-data (list mailbox :pending-flags))
      (bic--maybe-next-task fsm state-data)
      (list :connected state-data))
+    (`(:gmail-trash ,mailbox ,full-uid)
+     (bic--write-pending-gmail-trash mailbox full-uid state-data)
+     (if (bic-connection--has-capability
+	  "X-GM-EXT-1" (plist-get state-data :connection))
+	 (progn
+	   (bic--queue-task-if-new state-data
+			    (list mailbox :gmail-trash full-uid))
+	   (bic--maybe-next-task fsm state-data))
+	 (message "Gmail Trash requires the X-GM-EXT-1 IMAP extension; request queued"))
+     (list :connected state-data))
     (`(:copy ,from-mailbox ,to-mailbox ,full-uid)
      ;; TODO: offline-friendly
      (bic--queue-task-if-new state-data (list from-mailbox :copy to-mailbox full-uid))
@@ -876,6 +903,10 @@ but ask the user to pick one option."
      (list :disconnected state-data))
     (`(:flags ,mailbox ,full-uid ,flags-to-add ,flags-to-remove)
      (bic--write-pending-flags mailbox full-uid flags-to-add flags-to-remove state-data)
+     (list :disconnected state-data))
+    (`(:gmail-trash ,mailbox ,full-uid)
+     (bic--write-pending-gmail-trash mailbox full-uid state-data)
+     (message "Queued message %s to move to Gmail Trash when connected" full-uid)
      (list :disconnected state-data))
     (`(:sync-level ,mailbox ,new-sync-level)
      ;; Update sync level; we may have to send subscribe commands when
@@ -1586,6 +1617,95 @@ STATE-DATA is the state data of the account state machine."
       (cancel-timer previous-timer))
     (plist-put state-data :command-timeout-gensym nil)))
 
+(defun bic--gmail-label-for-mailbox (state-data mailbox)
+  "Return the Gmail label represented by MAILBOX, or nil for All Mail."
+  (let* ((attributes
+	  (plist-get (cdr (assoc mailbox (plist-get state-data :mailboxes)))
+		     :attributes))
+	 (system-label
+	  (cl-find-if (lambda (label) (member label attributes))
+		      '("\\Inbox" "\\Sent" "\\Drafts" "\\Trash"
+			"\\Junk" "\\Flagged" "\\Important" "\\All"))))
+    (cond
+     ((equal system-label "\\All") nil)
+     ((equal system-label "\\Junk") "\\Spam")
+     (system-label system-label)
+     ((string= mailbox "INBOX") "\\Inbox")
+     ((string-match "\\`\\[Gmail\\]/All Mail\\'" mailbox) nil)
+     ((string-match "\\`\\[Gmail\\]/\\(.*\\)\\'" mailbox)
+      (match-string 1 mailbox))
+     (t mailbox))))
+
+(defun bic--write-pending-gmail-trash (mailbox full-uid state-data)
+  "Persist a request to move FULL-UID from MAILBOX to Gmail Trash."
+  (let ((file (expand-file-name "pending-gmail-trash"
+				(bic--mailbox-dir state-data mailbox))))
+    (unless (and (file-exists-p file)
+		 (with-temp-buffer
+		   (insert-file-contents-literally file)
+		   (member full-uid (split-string (buffer-string) "\n" t))))
+      (with-temp-buffer
+	(insert full-uid "\n")
+	(write-region (point-min) (point-max) file t :silent)))))
+
+(defun bic--remove-pending-gmail-trash (mailbox full-uid state-data)
+  "Remove FULL-UID's completed Gmail Trash request from MAILBOX's queue."
+  (let ((file (expand-file-name "pending-gmail-trash"
+				(bic--mailbox-dir state-data mailbox))))
+    (when (file-exists-p file)
+      (with-temp-buffer
+	(insert-file-contents-literally file)
+	(let ((remaining (delete full-uid (split-string (buffer-string) "\n" t))))
+	  (erase-buffer)
+	  (when remaining
+	    (insert (mapconcat #'identity remaining "\n") "\n"))
+	  (write-region (point-min) (point-max) file nil :silent))))))
+
+(defun bic--apply-gmail-trash (fsm state-data task mailbox full-uid)
+  "Move FULL-UID from MAILBOX to Gmail Trash as part of TASK."
+  (let* ((uidvalidity-and-uid (split-string full-uid "-"))
+	 (uidvalidity (car uidvalidity-and-uid))
+	 (uid (cadr uidvalidity-and-uid))
+	 (c (plist-get state-data :connection))
+	 (mailbox-data (cdr (assoc mailbox (plist-get state-data :mailboxes))))
+	 (source-label (bic--gmail-label-for-mailbox state-data mailbox)))
+	(cl-labels ((finish (&optional success)
+		 (when success
+		   (bic--remove-pending-gmail-trash mailbox full-uid state-data))
+		 (fsm-send fsm (list :task-finished task)))
+	       (remove-from-current-mailbox ()
+		 ;; The message has left this Gmail label.  Update the local
+		 ;; mailbox immediately instead of forcing a full mailbox sync,
+		 ;; which can fetch every recent message body.
+		 (bic--messages-expunged state-data mailbox (list full-uid))
+		 (finish t)))
+	(if (or (not (equal uidvalidity (plist-get mailbox-data :uidvalidity)))
+		(null uid))
+	    (progn
+	      (message "Cannot move stale message %s from %s to Gmail Trash"
+		       full-uid mailbox)
+	      (finish t))
+	  (bic-command
+	   c (format "UID STORE %s +X-GM-LABELS (\\Trash)" uid)
+	   (lambda (add-response)
+	     (if (not (eq (car add-response) :ok))
+		 (progn
+		   (warn "Could not add Gmail Trash label to %s: %s"
+			 full-uid (plist-get (cl-second add-response) :text))
+		   (finish))
+	       (if (or (null source-label) (equal source-label "\\Trash"))
+		   (finish t)
+		 (bic-command
+		  c (format "UID STORE %s -X-GM-LABELS (%s)"
+			    uid (bic-quote-string source-label))
+		  (lambda (remove-response)
+		    (if (eq (car remove-response) :ok)
+			(remove-from-current-mailbox)
+		      (warn "Could not remove Gmail label %s from %s: %s"
+			    source-label full-uid
+			    (plist-get (cl-second remove-response) :text))
+		      (finish))))))))))))
+
 (defun bic--do-task (fsm state-data task)
   "Start performing a task.
 
@@ -1599,6 +1719,9 @@ question already."
   (pcase task
     (`(,mailbox :pending-flags)
      (bic--apply-pending-flags fsm state-data task mailbox))
+    (`(,mailbox :gmail-trash ,full-uid)
+     (cl-assert (string= mailbox (plist-get state-data :selected)))
+     (bic--apply-gmail-trash fsm state-data task mailbox full-uid))
     (`(,mailbox :sync-mailbox . ,_options)
      ;; At this point, we should have selected the mailbox already.
      (cl-assert (string= mailbox (plist-get state-data :selected)))
