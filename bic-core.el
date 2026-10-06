@@ -30,6 +30,7 @@
 (require 'gnutls)
 (require 'auth-source)
 (require 'password-cache)
+(require 'bic-sasl)
 
 (defvar bic-transcript-buffer "*bic-transcript-%s*")
 
@@ -285,8 +286,10 @@ Argument CAPABILITIES is the capabilities reported by the server."
     (funcall (plist-get state-data :callback) fsm :auth-wait)
     (list :wait-for-auth-proceed state-data))
    ((not (plist-get state-data :authenticated))
-    (let* ((server-mechanisms (cdr (assq :auth capabilities)))
-	   (mechanism (sasl-find-mechanism server-mechanisms)))
+    (let* ((username (plist-get state-data :username))
+	   (server (plist-get state-data :server))
+	   (server-mechanisms (cdr (assq :auth capabilities)))
+	   (mechanism (bic--sasl-find-mechanism server-mechanisms username server)))
       (cond
        ((null mechanism)
 	(bic--fail state-data
@@ -302,13 +305,9 @@ Argument CAPABILITIES is the capabilities reported by the server."
 			   server-mechanisms)))
        (t
 	(let* ((client
-		(sasl-make-client
-		 mechanism
-		 (plist-get state-data :username)
-		 "imap"
-		 (plist-get state-data :server)))
+		(sasl-make-client mechanism username "imap" server))
 	       (sasl-read-passphrase (bic--read-passphrase-function state-data))
-	       (step (catch :bic-sasl-abort (sasl-next-step client nil))))
+	       (step (catch :bic-sasl-abort (bic--sasl-next-step client nil))))
 	  (pcase step
 	    (:quit
 	     (bic--fail state-data
@@ -322,6 +321,10 @@ Argument CAPABILITIES is the capabilities reported by the server."
 	     (bic--fail state-data
 			:authentication-abort
 			(format "Unexpected data from auth source: %S" unexpected)))
+	    (`(:fail . ,failure-message)
+	     (bic--fail state-data
+			:authentication-failed
+			failure-message))
 	    (_
 	     ;; XXX: we can't send the AUTHENTICATE command here, because
 	     ;; sending data over a network connection means that we can
@@ -429,7 +432,7 @@ Argument CAPABILITIES is the capabilities reported by the server."
 		(unless (and (zerop (length data))
 			     (null (plist-get state-data :sasl-sent-message)))
 		  (sasl-step-set-data step (base64-decode-string data))
-		  (setq step (sasl-next-step client step))
+		  (setq step (bic--sasl-next-step client step))
 		  nil))
 	    (`nil
 	     ;; Update state-data before sending response, to avoid a race
@@ -451,6 +454,10 @@ Argument CAPABILITIES is the capabilities reported by the server."
 	     (bic--fail state-data
 			:authentication-abort
 			"Timeout waiting for password during IMAP authentication"))
+	    (`(:fail . ,failure-message)
+	     (bic--fail state-data
+			:authentication-failed
+			failure-message))
 	    (other
 	     (bic--fail state-data
 			:authentication-abort

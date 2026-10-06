@@ -5,7 +5,7 @@
 ;; Author: Magnus Henoch <magnus.henoch@gmail.com>
 ;; Keywords: mail
 ;; Package-Version: 0.0.1
-;; Package-Requires: ((emacs "25") (fsm "0.2.1") (srv "0.2"))
+;; Package-Requires: ((emacs "25") (fsm "0.2.1") (srv "0.2") (oauth2 "0.10"))
 ;; URL: https://github.com/legoscia/bic
 
 ;; This program is free software; you can redistribute it and/or modify
