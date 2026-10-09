@@ -218,12 +218,12 @@ the region."
 
 In a mailbox buffer, if the region is active, act on all messages in
 the region.  Otherwise, act on processable messages when any are
-marked.  This requires a connected Gmail IMAP account."
+marked.  The request is queued if the account is offline."
   (interactive)
-  (cl-labels ((move-one
-               (full-uid)
+  (cl-labels ((move-many
+               (full-uids)
                (fsm-send (bic--find-account bic--current-account)
-                         (list :gmail-trash bic--current-mailbox full-uid))))
+                         (list :gmail-trash bic--current-mailbox full-uids))))
     (cond
      ((and (derived-mode-p 'bic-mailbox-mode) (use-region-p))
       (let* ((first (ewoc-locate bic-mailbox--ewoc (region-beginning)))
@@ -240,18 +240,19 @@ marked.  This requires a connected Gmail IMAP account."
                                      (length nodes)))
           (signal 'quit nil))
         (setq deactivate-mark t)
-        (dolist (node nodes)
-          (move-one (ewoc-data node)))))
+        (move-many (mapcar #'ewoc-data nodes))))
      ((and (derived-mode-p 'bic-mailbox-mode)
            (> (hash-table-count bic-mailbox--processable) 0))
       (unless (yes-or-no-p
                (format "Move %d messages to Gmail Trash? "
                        (hash-table-count bic-mailbox--processable)))
         (signal 'quit nil))
-      (maphash (lambda (full-uid _value) (move-one full-uid))
-               bic-mailbox--processable))
+      (let (full-uids)
+        (maphash (lambda (full-uid _value) (push full-uid full-uids))
+                 bic-mailbox--processable)
+        (move-many (nreverse full-uids))))
      (t
-      (move-one (bic--find-message-at-point))
+      (move-many (list (bic--find-message-at-point)))
       (when (derived-mode-p 'bic-mailbox-mode)
         (ignore-errors (ewoc-goto-next bic-mailbox--ewoc 1)))))))
 
