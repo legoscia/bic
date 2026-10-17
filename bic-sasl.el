@@ -45,7 +45,24 @@ SERVER is the server we're authenticating to."
       (let ((sasl-mechanisms (cons "XOAUTH2" sasl-mechanisms))
 	    (sasl-mechanism-alist (cons (list "XOAUTH2" 'bic-sasl-xoauth2) sasl-mechanism-alist)))
 	(sasl-find-mechanism server-mechanisms))
-    (sasl-find-mechanism server-mechanisms)))
+    ;; Server proposes XOAUTH2, but we don't have a client id
+    (if (member "XOAUTH2" sasl-mechanisms)
+	(pcase (widget-choose
+		(concat
+		 "The server proposes XOAUTH2 authentication, but we don't have a matching "
+		 "client id. This is unlikely to work.")
+		(list (cons "Try password authentication anyway" :password)
+		      (cons "Customize client id list" :customize)
+		      (cons "Exit" :exit)))
+	  (`:password
+	   (sasl-find-mechanism server-mechanisms))
+	  (`:customize
+	   (run-with-idle-timer 0.1 nil 'customize-option 'bic-sasl-xoauth2-host-user-id-table)
+	   (user-error "No authentication mechanism found"))
+	  (`:exit
+	   (user-error "No authentication mechanism found")))
+      ;; Server doesn't propose XOAUTH2 - continue with password authentication
+      (sasl-find-mechanism server-mechanisms))))
 
 (defun bic--sasl-next-step (client step)
   "Like `sasl-next-step', but with some BIC specific quirks.
