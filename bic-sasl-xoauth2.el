@@ -37,10 +37,9 @@
 
 ;;; Usage
 ;;
-;; 1. Set up bic-sasl-xoauth2-host-url-table and
-;; bic-sasl-xoauth2-host-user-id-table variables.
-;;
-;; 2. When passphrase is asked, input client secret.
+;; Configure `bic-sasl-xoauth2-host-url-table' and
+;; `bic-sasl-xoauth2-host-user-id-table' before using XOAUTH2.  BIC reports
+;; an error if required OAuth configuration is missing.
 
 ;;; Code:
 
@@ -111,11 +110,6 @@ Below is example to use Thunderbird's client ID and secret (not recommended, jus
 			  (const :tag "none" nil))))
   :group 'bic-sasl-xoauth2)
 
-
-;; This advice makes oauth2.el to keep the time of getting token.
-(defadvice oauth2-make-access-request (after bic-sasl-xoauth2 disable)
-  (setq ad-return-value (cons `(auth_time . ,(current-time))
-			      ad-return-value)))
 
 ;; Modified version of oauth2-refresh-access.  It keeps refreshed time
 ;; and updates expires_in parameter.
@@ -339,55 +333,45 @@ TOKEN should be obtained with `oauth2-request-access'."
           (bic-sasl-xoauth2--write-token token file)
           token))))
 
-(defun bic-sasl-xoauth2-response (client step &optional retry)
-  (let ((host (sasl-client-server client))
-	(user (sasl-client-name client))
-	info access-token oauth2-token
-	auth-url token-url client-id scope redirect-uri client-secret)
-    (setq info (bic-sasl-xoauth2-resolve-urls host user)
-	  auth-url
-	  (or (car info)
-	      (read-string (format "Input OAuth 2.0 AUTH-URL for %s: " host)))
-	  token-url
-	  (or (nth 1 info)
-	      (read-string (format "Input OAuth 2.0 TOKEN-URL for %s: " host)))
-	  scope
-	  (or (nth 2 info)
-	      (read-string (format "Input OAuth 2.0 SCOPE for %s: " host)))
-	  client-id
-	  (or (nth 3 info)
-	      (read-string
-	       (format "Input OAuth 2.0 CLIENT-ID for %s@%s: " user host)
-	       user nil user))
-	  client-secret
-	  (or (nth 4 info)
-	      (sasl-read-passphrase
-	       (format "Input Oauth 2.0 CLIENT-SECRET for %s@%s: " user host)))
-	  redirect-uri
-	  (or (nth 5 info)
-	      ;; Do not ask when bic-sasl-xoauth2-host-url-table is
-	      ;; matched.
-	      (unless (car info)
-		(read-string
-		 (format "Input OAuth 2.0 Redirect-URI for %s: " host)))))
-    (setq oauth2-token
-	  (progn
-	    (ad-enable-advice 'oauth2-make-access-request 'after 'bic-sasl-xoauth2)
-	    (ad-activate 'oauth2-make-access-request)
-	    (prog1
-		(bic-sasl-xoauth2--auth-and-store
-		 auth-url token-url scope client-id client-secret redirect-uri user)
-	      (ad-disable-advice 'oauth2-make-access-request
-				 'after 'bic-sasl-xoauth2)
-	      (ad-activate 'oauth2-make-access-request))))
-    (when (bic-sasl-xoauth2-token-expired-p oauth2-token)
-      (setq oauth-token (bic-sasl-xoauth2-refresh-access oauth2-token))
-      (bic-sasl-xoauth2--write-token
-       oauth2-token (bic-sasl-xoauth2--token-file user)))
-    (setq access-token (oauth2-token-access-token oauth2-token))
-    (format "user=%s\001auth=Bearer %s\001\001"
-	    (sasl-client-name client)
-	    access-token)))
+(defun bic-sasl-xoauth2-access-token (host user)
+  "Return a current OAuth access token for USER at HOST.
+Use the same cached token and refresh flow as BIC's SASL mechanism.
+Signal an error if OAuth endpoints, scope, or client ID are not configured."
+  (let* ((info (bic-sasl-xoauth2-resolve-urls host user))
+	 (auth-url (nth 0 info))
+	 (token-url (nth 1 info))
+	 (scope (nth 2 info))
+	 (client-id (nth 3 info))
+	 (client-secret (nth 4 info))
+	 (redirect-uri (nth 5 info))
+	 (oauth2-make-access-request-original
+	  (symbol-function 'oauth2-make-access-request))
+	 oauth2-token)
+    (unless (and auth-url token-url scope client-id)
+      (user-error
+       "OAuth is not configured for %s@%s; set bic-sasl-xoauth2-host-url-table and bic-sasl-xoauth2-host-user-id-table"
+       user host))
+    ;; oauth2.el doesn't retain the time of token acquisition, but BIC
+    ;; needs it to determine when the cached token expires.  Scope this
+    ;; replacement to token acquisition and refresh only.
+    (cl-letf (((symbol-function 'oauth2-make-access-request)
+	       (lambda (&rest args)
+		 (cons `(auth_time . ,(current-time))
+		       (apply oauth2-make-access-request-original args)))))
+      (setq oauth2-token
+	    (bic-sasl-xoauth2--auth-and-store
+	     auth-url token-url scope client-id client-secret redirect-uri user))
+      (when (bic-sasl-xoauth2-token-expired-p oauth2-token)
+	(setq oauth2-token (bic-sasl-xoauth2-refresh-access oauth2-token))
+	(bic-sasl-xoauth2--write-token
+	 oauth2-token (bic-sasl-xoauth2--token-file user))))
+    (oauth2-token-access-token oauth2-token)))
+
+(defun bic-sasl-xoauth2-response (client _step &optional _retry)
+  (format "user=%s\001auth=Bearer %s\001\001"
+	  (sasl-client-name client)
+	  (bic-sasl-xoauth2-access-token
+	   (sasl-client-server client) (sasl-client-name client))))
 
 (put 'bic-sasl-xoauth2 'sasl-mechanism
      (sasl-make-mechanism "XOAUTH2" bic-sasl-xoauth2-steps))

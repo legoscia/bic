@@ -160,6 +160,30 @@ while you're offline, and send them automatically when you come online
 again.  To enable that behaviour, set =bic-smtpmail-toggle-queueing=
 to =t=.
 
+To use BIC's OAuth support when sending mail with smtpmail, set
+=send-mail-function= (and, when using Message or Gnus,
+=message-send-mail-function=) to =bic-smtpmail-send-it=.
+
+When the message's From address matches a BIC account, BIC can discover
+the submission server using the =_submissions._tcp= and
+=_submission._tcp= DNS SRV records.  Implicit TLS is used for
+=_submissions= records, and STARTTLS is required for =_submission=
+records.  If neither record exists, configure =smtpmail-smtp-server= or
+=bic-smtpmail-sender-settings-alist=; invoking
+=bic-smtpmail-send-it= interactively prompts for an endpoint.  The
+selected discovered endpoint is saved in that account's
+=smtp-connection-info= file after a successful send.  A configured
+=smtpmail-smtp-server= remains authoritative.
+
+BIC uses the message's matching account for XOAUTH2 and, when SMTP has
+no separate auth-source credential, looks up that account's IMAP
+credential as a password-auth fallback.  SMTP's advertised AUTH
+mechanisms still determine which method can be used.  Other senders
+continue through the normal =smtpmail= configuration.  For aliases,
+=bic-smtpmail-sender-account-alist= maps a From address to its BIC
+account, and =bic-smtpmail-sender-settings-alist= can supply a
+sender-specific SMTP endpoint.
+
 ** Contact
 
 Feel free to open an issue in [[https://github.com/legoscia/bic/issues][the issue tracker]], or send me an email
